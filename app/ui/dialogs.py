@@ -177,6 +177,64 @@ class Dialogs:
         page.show_dialog(dialog)
 
     # --------------------------------------------------------
+    # Method: showPushVersionSuggest
+    # Purpose: When there is no Changelog, suggest next Git tag version.
+    # --------------------------------------------------------
+    @staticmethod
+    def showPushVersionSuggest(
+        page: ft.Page,
+        suggested_version: str,
+        last_tag: str,
+        on_push_only: Callable[[], None],
+        on_push_and_tag: Callable[[str], None],
+    ) -> None:
+        tag_field = ft.TextField(
+            label="Next version tag",
+            value=suggested_version if suggested_version.startswith("v") else f"v{suggested_version}",
+            autofocus=True,
+        )
+        from_note = (
+            f"Latest Git tag: {last_tag}"
+            if last_tag
+            else "No Git tags yet — starting from v0.1.0"
+        )
+        hint = ft.Text(
+            f"No Changelog.md with a version found. {from_note}. "
+            "You can push as usual, or also create this tag on Git.",
+            size=13,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+        )
+
+        def push_only(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            on_push_only()
+
+        def push_and_tag(_e: ft.ControlEvent) -> None:
+            version = (tag_field.value or "").strip()
+            if not version:
+                return
+            page.pop_dialog()
+            on_push_and_tag(version)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Push — suggested version"),
+            content=ft.Column(
+                [hint, tag_field],
+                tight=True,
+                width=420,
+                spacing=12,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _e: page.pop_dialog()),
+                ft.OutlinedButton("Push only", on_click=push_only),
+                ft.FilledButton("Push and tag", on_click=push_and_tag),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialog)
+
+    # --------------------------------------------------------
     # Method: showDiff
     # Purpose: Show unified diff text for a file.
     # --------------------------------------------------------

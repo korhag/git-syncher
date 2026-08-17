@@ -186,6 +186,9 @@ class GitService:
         status.is_repo = True
         status.branch = self.detectBranch(root) or project.default_branch
         status.remote_url = self.detectRemoteUrl(root) or project.remote_url
+        # Keep stored default branch aligned with the branch you are actually on.
+        if status.branch and status.branch != project.default_branch:
+            project.default_branch = status.branch
 
         if fetch and (project.remote_url or status.remote_url):
             self._runWithAuth(
@@ -319,18 +322,34 @@ class GitService:
 
     # --------------------------------------------------------
     # Method: pull
-    # Purpose: Pull from origin with optional rebase.
+    # Purpose: Pull from origin for the branch you are on.
     # --------------------------------------------------------
-    def pull(self, project: ProjectConfig, rebase: bool = False) -> ActionOutcome:
+    def pull(
+        self,
+        project: ProjectConfig,
+        rebase: bool = False,
+        branch: Optional[str] = None,
+    ) -> ActionOutcome:
         root = Path(project.path)
+        current = self.detectBranch(root)
+        target = (branch or current or project.default_branch or "main").strip()
+        if current and project.default_branch != current:
+            project.default_branch = current
         args = ["pull"]
         if rebase:
             args.append("--rebase")
-        args.extend(["origin", project.default_branch or self.detectBranch(root) or "main"])
+        args.extend(["origin", target])
         result = self._runWithAuth(args, cwd=root, project=project, timeout=120)
         if result.ok:
             return ActionMapper.success("Pull complete", result.stdout.strip())
-        return ActionMapper.mapError("pull", result.stderr, result.stdout, result.returncode)
+        return ActionMapper.mapError(
+            "pull",
+            result.stderr,
+            result.stdout,
+            result.returncode,
+            local_branch=current or target,
+            requested_branch=target,
+        )
 
     # --------------------------------------------------------
     # Method: push
@@ -355,6 +374,50 @@ class GitService:
         if result.ok:
             label = "Force push complete" if force else "Push complete"
             return ActionMapper.success(label, result.stdout.strip() or branch)
+        return ActionMapper.mapError("push", result.stderr, result.stdout, result.returncode)
+
+    # --------------------------------------------------------
+    # Method: createTag
+    # Purpose: Create an annotated (or lightweight) version tag locally.
+    # --------------------------------------------------------
+    def createTag(
+        self,
+        path: str | Path,
+        version: str,
+        message: str = "",
+    ) -> ActionOutcome:
+        root = Path(path)
+        tag_name = version if version.lower().startswith("v") else f"v{version}"
+        tag_message = message or f"Release {tag_name}"
+        result = self._run(["tag", "-a", tag_name, "-m", tag_message], cwd=root)
+        if result.ok:
+            return ActionMapper.success("Tag created", tag_name)
+        # Fall back to lightweight tag if annotated fails (e.g. no identity).
+        light = self._run(["tag", tag_name], cwd=root)
+        if light.ok:
+            return ActionMapper.success("Tag created", tag_name)
+        return ActionMapper.mapError(
+            "tag",
+            result.stderr or light.stderr,
+            result.stdout or light.stdout,
+            result.returncode or light.returncode,
+        )
+
+    # --------------------------------------------------------
+    # Method: pushTag
+    # Purpose: Push one tag to origin.
+    # --------------------------------------------------------
+    def pushTag(self, project: ProjectConfig, version: str) -> ActionOutcome:
+        root = Path(project.path)
+        tag_name = version if version.lower().startswith("v") else f"v{version}"
+        result = self._runWithAuth(
+            ["push", "origin", tag_name],
+            cwd=root,
+            project=project,
+            timeout=120,
+        )
+        if result.ok:
+            return ActionMapper.success("Tag pushed", tag_name)
         return ActionMapper.mapError("push", result.stderr, result.stdout, result.returncode)
 
     # --------------------------------------------------------
@@ -503,6 +566,13 @@ class GitService:
             return ahead, behind
         except ValueError:
             return 0, 0
+
+    # --------------------------------------------------------
+    # Method: latestTag
+    # Purpose: Public accessor for the newest tag in a repo.
+    # --------------------------------------------------------
+    def latestTag(self, path: str | Path) -> str:
+        return self._latestTag(Path(path))
 
     # --------------------------------------------------------
     # Method: _latestTag

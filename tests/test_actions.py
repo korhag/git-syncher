@@ -88,6 +88,41 @@ class TestActionMapper:
         assert any(c.id == ActionId.FIRST_PUSH for c in outcome.choices)
 
     # --------------------------------------------------------
+    # Method: testMissingRemoteRefWithBranchContext
+    # --------------------------------------------------------
+    def testMissingRemoteRefWithBranchContext(self) -> None:
+        outcome = ActionMapper.mapError(
+            "pull",
+            stderr="fatal: couldn't find remote ref main",
+            local_branch="master",
+            requested_branch="main",
+        )
+        assert outcome.title == "Remote branch not found"
+        assert "master" in outcome.message
+        assert "main" in outcome.message
+        assert "Git pull needs attention" not in outcome.title
+        ids = [c.id for c in outcome.choices]
+        assert ActionId.PULL_CURRENT_BRANCH in ids
+        assert ActionId.FIRST_PUSH in ids
+        assert ActionId.OPEN_SETTINGS in ids
+        assert ActionId.CANCEL in ids
+        assert ActionId.RETRY not in ids
+        pull_choice = next(c for c in outcome.choices if c.id == ActionId.PULL_CURRENT_BRANCH)
+        assert pull_choice.label == "Pull master"
+
+    # --------------------------------------------------------
+    # Method: testMissingRemoteRefParsesNameFromStderr
+    # --------------------------------------------------------
+    def testMissingRemoteRefParsesNameFromStderr(self) -> None:
+        outcome = ActionMapper.mapError(
+            "pull",
+            stderr="fatal: couldn't find remote ref main",
+            local_branch="master",
+        )
+        assert "main" in outcome.message
+        assert ActionId.PULL_CURRENT_BRANCH in [c.id for c in outcome.choices]
+
+    # --------------------------------------------------------
     # Method: testSuccessHelper
     # --------------------------------------------------------
     def testSuccessHelper(self) -> None:

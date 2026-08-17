@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -17,6 +18,7 @@ class ActionId(str, Enum):
     DISCARD_THEN_PULL = "discard_then_pull"
     STASH_THEN_PULL = "stash_then_pull"
     PULL_FIRST = "pull_first"
+    PULL_CURRENT_BRANCH = "pull_current_branch"
     OVERWRITE_REMOTE = "overwrite_remote"
     INIT_REPO = "init_repo"
     SET_REMOTE = "set_remote"
@@ -62,7 +64,7 @@ class ActionMapper:
     # --------------------------------------------------------
     # Method: mapError
     # Purpose: Inspect Git output and return recovery options.
-    # Input: operation (str), stderr (str), stdout (str), returncode (int)
+    # Input: operation, stderr, stdout, returncode; optional branch context
     # Output: ActionOutcome
     # --------------------------------------------------------
     @classmethod
@@ -72,6 +74,8 @@ class ActionMapper:
         stderr: str = "",
         stdout: str = "",
         returncode: int = 1,
+        local_branch: str = "",
+        requested_branch: str = "",
     ) -> ActionOutcome:
         combined = f"{stderr}\n{stdout}".lower()
         details = (stderr or stdout or "").strip()
@@ -97,6 +101,13 @@ class ActionMapper:
                     ActionChoice(ActionId.CANCEL, "Cancel"),
                 ],
                 details=details,
+            )
+
+        if cls._isMissingRemoteRef(combined):
+            return cls._missingRemoteRefOutcome(
+                details=details,
+                local_branch=local_branch,
+                requested_branch=requested_branch or cls._parseMissingRemoteRef(stderr or stdout),
             )
 
         if operation in ("pull", "fetch") and cls._isDivergedOrBehind(combined):
@@ -216,6 +227,60 @@ class ActionMapper:
         )
 
     # --------------------------------------------------------
+    # Method: _missingRemoteRefOutcome
+    # Purpose: Plain next-step dialog when a remote branch name is wrong.
+    # --------------------------------------------------------
+    @classmethod
+    def _missingRemoteRefOutcome(
+        cls,
+        details: str,
+        local_branch: str = "",
+        requested_branch: str = "",
+    ) -> ActionOutcome:
+        on_computer = local_branch or "this branch"
+        missing = requested_branch or "that name"
+        if local_branch and requested_branch and local_branch != requested_branch:
+            message = (
+                f"This computer is on {local_branch}. "
+                f"Git does not have a branch named {requested_branch}. "
+                f"Next: get updates for {local_branch} (the branch you are on)."
+            )
+            pull_label = f"Pull {local_branch}"
+        elif local_branch:
+            message = (
+                f"This computer is on {local_branch}. "
+                f"Git does not have a branch named {missing} yet. "
+                f"Next: pull {local_branch}, or send this branch to Git."
+            )
+            pull_label = f"Pull {local_branch}"
+        else:
+            message = (
+                f"Git does not have a branch named {missing}. "
+                "Next: open settings to fix the branch name, or send this branch to Git."
+            )
+            pull_label = "Pull current branch"
+
+        return ActionOutcome(
+            title="Remote branch not found",
+            message=message,
+            choices=[
+                ActionChoice(
+                    ActionId.PULL_CURRENT_BRANCH,
+                    pull_label,
+                    description=f"Get updates for {on_computer} from Git.",
+                ),
+                ActionChoice(
+                    ActionId.FIRST_PUSH,
+                    "Send this branch to Git",
+                    description="Create this branch on the remote (first push).",
+                ),
+                ActionChoice(ActionId.OPEN_SETTINGS, "Open project settings"),
+                ActionChoice(ActionId.CANCEL, "Cancel"),
+            ],
+            details=details,
+        )
+
+    # --------------------------------------------------------
     # Method: success
     # Purpose: Build a simple success outcome.
     # --------------------------------------------------------
@@ -311,3 +376,31 @@ class ActionMapper:
             "set the remote as upstream",
         )
         return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _isMissingRemoteRef(text: str) -> bool:
+        markers = (
+            "couldn't find remote ref",
+            "could not find remote ref",
+            "no such ref",
+            "does not exist in the remote",
+        )
+        return any(marker in text for marker in markers)
+
+    # --------------------------------------------------------
+    # Method: _parseMissingRemoteRef
+    # Purpose: Extract the missing branch name from Git stderr.
+    # --------------------------------------------------------
+    @staticmethod
+    def _parseMissingRemoteRef(text: str) -> str:
+        match = re.search(
+            r"(?:couldn't|could not) find remote ref\s+(\S+)",
+            text,
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"no such ref[:\s]+(\S+)", text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return ""

@@ -122,6 +122,11 @@ class DashboardView:
 
         try:
             self.statuses = self.git.refreshAll(self.store.projects, fetch=True)
+            # Persist any default_branch corrections from detected branches.
+            try:
+                self.store.save()
+            except Exception:
+                pass
             count = len(self.store.projects)
             self.status_text.value = f"Updated {count} project{'s' if count != 1 else ''}"
         except Exception as exc:  # noqa: BLE001

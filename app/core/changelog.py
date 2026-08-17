@@ -68,14 +68,58 @@ class ChangelogParser:
 
     # --------------------------------------------------------
     # Method: suggestCommitMessage
-    # Purpose: Build a default commit message from changelog version.
+    # Purpose: Prefer Changelog version; else bump the latest Git tag.
     # --------------------------------------------------------
     @classmethod
-    def suggestCommitMessage(cls, project_path: str | Path) -> Optional[str]:
+    def suggestCommitMessage(
+        cls,
+        project_path: str | Path,
+        last_tag: str = "",
+    ) -> Optional[str]:
         version = cls.readVersion(project_path)
-        if not version:
-            return None
-        return f"Release v{version}"
+        if version:
+            return f"Release v{version}"
+        next_version = cls.suggestNextVersionFromTag(last_tag)
+        if next_version:
+            if last_tag:
+                return f"Release v{next_version}"
+            return f"Release v{next_version}"
+        return None
+
+    # --------------------------------------------------------
+    # Method: hasProperChangelog
+    # Purpose: True when a changelog file exists and has a version.
+    # --------------------------------------------------------
+    @classmethod
+    def hasProperChangelog(cls, project_path: str | Path) -> bool:
+        return cls.readVersion(project_path) is not None
+
+    # --------------------------------------------------------
+    # Method: suggestNextVersionFromTag
+    # Purpose: One patch higher than the latest Git tag (or 0.1.0).
+    # --------------------------------------------------------
+    @classmethod
+    def suggestNextVersionFromTag(cls, last_tag: str = "") -> str:
+        if not last_tag or not last_tag.strip():
+            return "0.1.0"
+        current = cls.normalizeVersion(last_tag)
+        return cls.bumpPatchVersion(current)
+
+    # --------------------------------------------------------
+    # Method: bumpPatchVersion
+    # Purpose: Increase the last numeric segment by one (1.2.3 -> 1.2.4).
+    # --------------------------------------------------------
+    @classmethod
+    def bumpPatchVersion(cls, version: str) -> str:
+        normalized = cls.normalizeVersion(version)
+        core = re.split(r"[^\d.]", normalized, maxsplit=1)[0]
+        parts = [int(p) if p.isdigit() else 0 for p in core.split(".") if p != ""]
+        if not parts:
+            return "0.1.0"
+        while len(parts) < 3:
+            parts.append(0)
+        parts[-1] += 1
+        return ".".join(str(p) for p in parts)
 
     # --------------------------------------------------------
     # Method: normalizeVersion

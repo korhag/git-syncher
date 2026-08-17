@@ -171,6 +171,17 @@ class ProjectDetailView:
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 )
             )
+        else:
+            next_version = ChangelogParser.suggestNextVersionFromTag(status.last_tag)
+            tag_note = status.last_tag or "none yet"
+            self.body.controls.append(
+                ft.Text(
+                    f"No Changelog version · latest Git tag: {tag_note} · "
+                    f"suggested next: v{next_version}",
+                    size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                )
+            )
 
         self.body.controls.append(
             ft.Text("Changed files", size=16, weight=ft.FontWeight.W_600)
@@ -338,7 +349,10 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        suggested = ChangelogParser.suggestCommitMessage(project.path) or ""
+        last_tag = self.status.last_tag if self.status else ""
+        if not last_tag:
+            last_tag = self.git.latestTag(project.path)
+        suggested = ChangelogParser.suggestCommitMessage(project.path, last_tag=last_tag) or ""
         Dialogs.showCommit(self.page, suggested, on_commit=self._commitWithMessage)
 
     def _commitWithMessage(self, message: str) -> None:
@@ -357,6 +371,30 @@ class ProjectDetailView:
         outcome = self.git.pull(project)
         self._handleOutcome(outcome, retry=self.doPull)
         if outcome.success:
+            try:
+                self.store.save()
+            except Exception:
+                pass
+            self.reload(silent=True)
+
+    # --------------------------------------------------------
+    # Method: _pullCurrentBranch
+    # Purpose: Pull the branch this computer is on (not a stale default).
+    # --------------------------------------------------------
+    def _pullCurrentBranch(self) -> None:
+        project = self.project
+        if not project:
+            return
+        current = self.git.detectBranch(project.path)
+        if current:
+            project.default_branch = current
+            try:
+                self.store.save()
+            except Exception:
+                pass
+        outcome = self.git.pull(project, branch=current or None)
+        self._handleOutcome(outcome, retry=self._pullCurrentBranch)
+        if outcome.success:
             self.reload(silent=True)
 
     def doPush(self, force: bool = False, set_upstream: bool = False) -> None:
@@ -364,14 +402,39 @@ class ProjectDetailView:
         if not project:
             return
 
-        def run() -> None:
+        def run_push(create_tag_version: Optional[str] = None) -> None:
             outcome = self.git.push(project, force=force, set_upstream=set_upstream)
-            self._handleOutcome(
-                outcome,
-                retry=lambda: self.doPush(force=force, set_upstream=set_upstream),
-            )
-            if outcome.success:
-                self.reload(silent=True)
+            if not outcome.success:
+                self._handleOutcome(
+                    outcome,
+                    retry=lambda: self.doPush(force=force, set_upstream=set_upstream),
+                )
+                return
+
+            if create_tag_version:
+                tag_outcome = self.git.createTag(project.path, create_tag_version)
+                if not tag_outcome.success:
+                    Dialogs.showSnack(self.page, "Push succeeded, but tagging failed.", error=True)
+                    self._handleOutcome(tag_outcome)
+                    self.reload(silent=True)
+                    return
+                push_tag = self.git.pushTag(project, create_tag_version)
+                if push_tag.success:
+                    Dialogs.showSnack(
+                        self.page,
+                        f"Pushed and tagged {create_tag_version}",
+                    )
+                else:
+                    Dialogs.showSnack(
+                        self.page,
+                        f"Pushed; tag created locally but not on Git yet ({push_tag.message})",
+                        error=True,
+                    )
+                    self._handleOutcome(push_tag)
+            else:
+                self._handleOutcome(outcome)
+
+            self.reload(silent=True)
 
         if force:
             Dialogs.showConfirm(
@@ -382,10 +445,26 @@ class ProjectDetailView:
                     "Only continue if you are sure."
                 ),
                 confirm_label="Overwrite remote",
-                on_confirm=run,
+                on_confirm=lambda: run_push(None),
             )
-        else:
-            run()
+            return
+
+        # No Changelog version → suggest next version from Git tags.
+        if not ChangelogParser.hasProperChangelog(project.path):
+            last_tag = self.status.last_tag if self.status else ""
+            if not last_tag:
+                last_tag = self.git.latestTag(project.path)
+            next_version = ChangelogParser.suggestNextVersionFromTag(last_tag)
+            Dialogs.showPushVersionSuggest(
+                self.page,
+                suggested_version=next_version,
+                last_tag=last_tag,
+                on_push_only=lambda: run_push(None),
+                on_push_and_tag=lambda ver: run_push(ver),
+            )
+            return
+
+        run_push(None)
 
     # --------------------------------------------------------
     # Method: _handleOutcome
@@ -432,6 +511,9 @@ class ProjectDetailView:
             return
         if action_id == ActionId.PULL_FIRST:
             self.doPull()
+            return
+        if action_id == ActionId.PULL_CURRENT_BRANCH:
+            self._pullCurrentBranch()
             return
         if action_id == ActionId.OVERWRITE_REMOTE:
             self.doPush(force=True, set_upstream=False)
