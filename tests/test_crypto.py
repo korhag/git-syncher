@@ -130,6 +130,27 @@ class TestVaultStore:
                 store.unlockVault("anything-long")
 
     # --------------------------------------------------------
+    # Method: testIsVaultDamagedAndDiscard
+    # --------------------------------------------------------
+    def testIsVaultDamagedAndDiscard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault_path = Path(tmp) / "vault.enc"
+            store = VaultStore(vault_path=vault_path)
+            assert store.isVaultDamaged() is False
+
+            vault_path.write_text("", encoding="utf-8")
+            assert store.vaultExists() is True
+            assert store.isVaultDamaged() is True
+
+            bak = store.backupPath()
+            bak.write_text('{"salt":"aa","payload":"bb"}', encoding="utf-8")
+            assert store.discardDamagedVault() is True
+            assert store.vaultExists() is False
+            assert store.isVaultDamaged() is False
+            # Backup must remain
+            assert bak.is_file()
+
+    # --------------------------------------------------------
     # Method: testAtomicSaveKeepsPreviousOnTmpOnly
     # Purpose: Writing only the tmp file must not wipe vault.enc.
     # --------------------------------------------------------
