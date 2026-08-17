@@ -5,7 +5,6 @@ from typing import Callable, Optional
 
 import flet as ft
 
-from app.core.changelog import ChangelogParser
 from app.core.git_service import GitService
 from app.core.store import VaultStore
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
@@ -181,18 +180,20 @@ class DashboardView:
     ) -> ft.Control:
         action = status.suggested_action if status else SuggestedAction.UNKNOWN
         label, color = _ACTION_META.get(action, ("Check", ft.Colors.GREY_400))
-        summary = status.summaryLabel() if status else "Not refreshed yet"
-        extra = ""
-        if status and ChangelogParser.isChangelogNewerThanTag(
-            status.changelog_version, status.last_tag
-        ):
-            extra = f" · Changelog v{status.changelog_version} ahead of tag"
+        if status:
+            status_lines = status.plainStatusLines()
+        else:
+            status_lines = ["Not refreshed yet"]
 
         def open_detail(_e: ft.ControlEvent, pid: str = project.id) -> None:
             self.on_open_project(pid)
 
         def quick_action(_e: ft.ControlEvent, pid: str = project.id) -> None:
             self.on_open_project(pid)
+
+        status_controls: list[ft.Control] = [
+            ft.Text(line, size=13) for line in status_lines
+        ]
 
         return ft.Card(
             content=ft.Container(
@@ -211,7 +212,7 @@ class DashboardView:
                                     max_lines=1,
                                     overflow=ft.TextOverflow.ELLIPSIS,
                                 ),
-                                ft.Text(summary + extra, size=13),
+                                *status_controls,
                             ],
                             expand=True,
                             spacing=4,

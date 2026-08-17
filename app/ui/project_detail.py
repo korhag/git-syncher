@@ -40,7 +40,7 @@ class ProjectDetailView:
         self.dashboard = dashboard
         self.status: Optional[ProjectStatus] = None
         self.body = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=12)
-        self.header_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.header_status = ft.Column(spacing=2, tight=True)
 
     # --------------------------------------------------------
     # Property: project
@@ -134,7 +134,10 @@ class ProjectDetailView:
 
         action = status.suggested_action
         label, color = _ACTION_META.get(action, ("Check", ft.Colors.GREY_400))
-        self.header_status.value = status.summaryLabel()
+        self.header_status.controls = [
+            ft.Text(line, size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+            for line in status.plainStatusLines()
+        ]
 
         suggestion_row = ft.Container(
             padding=12,
@@ -161,14 +164,9 @@ class ProjectDetailView:
         self.body.controls.append(suggestion_row)
 
         if status.changelog_version:
-            tag_note = status.last_tag or "(no tags)"
-            newer = ChangelogParser.isChangelogNewerThanTag(
-                status.changelog_version, status.last_tag
-            )
             self.body.controls.append(
                 ft.Text(
-                    f"Changelog v{status.changelog_version} · latest tag {tag_note}"
-                    + (" · changelog is newer" if newer else ""),
+                    f"Version in Changelog.md: {status.changelog_version}",
                     size=12,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 )
@@ -204,17 +202,30 @@ class ProjectDetailView:
     @staticmethod
     def _suggestionHint(status: ProjectStatus) -> str:
         if status.suggested_action == SuggestedAction.COMMIT:
-            return "You have uncommitted local changes."
+            count = len(status.changes)
+            noun = "file" if count == 1 else "files"
+            return f"{count} {noun} changed on this computer — save them with Commit."
         if status.suggested_action == SuggestedAction.PUSH:
-            return f"Local is {status.ahead} commit(s) ahead of remote."
+            noun = "commit" if status.ahead == 1 else "commits"
+            return (
+                f"This computer has {status.ahead} {noun} that Git does not have yet — "
+                "Push sends them."
+            )
         if status.suggested_action == SuggestedAction.PULL:
-            return f"Remote is {status.behind} commit(s) ahead of local."
+            noun = "commit" if status.behind == 1 else "commits"
+            return (
+                f"Git has {status.behind} {noun} this computer does not have yet — "
+                "Pull downloads them."
+            )
         if status.suggested_action == SuggestedAction.RESOLVE:
             if status.ahead and status.behind:
-                return "Branches have diverged. Compare, pull carefully, or overwrite remote."
+                return (
+                    "This computer and Git both have new commits — they differ. "
+                    "Compare, pull carefully, or overwrite remote."
+                )
             return "Conflicts or mixed state need a choice."
         if status.suggested_action == SuggestedAction.SYNCED:
-            return "Local and remote look aligned."
+            return "This computer and Git are in sync."
         if status.suggested_action == SuggestedAction.NOT_A_REPO:
             return "Initialize Git from project settings."
         if status.suggested_action == SuggestedAction.MISSING_PATH:

@@ -130,28 +130,65 @@ class ProjectStatus:
     remote_url: str = ""
 
     # --------------------------------------------------------
-    # Method: summaryLabel
-    # Purpose: Short human-readable status for the card.
+    # Method: plainStatusLines
+    # Purpose: Plain-English lines: this computer vs Git (remote).
+    #          Changelog / tags are NOT included here.
+    # Output: list[str] - one or two short sentences for the UI.
     # --------------------------------------------------------
-    def summaryLabel(self) -> str:
+    def plainStatusLines(self) -> list[str]:
         if not self.path_exists:
-            return "Folder missing"
+            return ["Folder missing"]
         if not self.is_repo:
-            return "Not a Git repo"
+            return ["Not a Git repo"]
         if self.error_message and self.suggested_action == SuggestedAction.UNKNOWN:
-            return self.error_message
-        parts: list[str] = []
+            return [self.error_message]
+
+        lines: list[str] = []
         if self.branch:
-            parts.append(self.branch)
+            lines.append(f"Branch: {self.branch}")
+
         if self.dirty:
             count = len(self.changes)
-            parts.append(f"{count} change{'s' if count != 1 else ''}")
+            noun = "file" if count == 1 else "files"
+            lines.append(
+                f"{count} {noun} changed on this computer (not saved to Git yet)"
+            )
+            git_gap = self._gitGapSentence()
+            if git_gap:
+                lines.append(git_gap)
+            return lines
+
+        git_gap = self._gitGapSentence()
+        if git_gap:
+            lines.append(git_gap)
+            return lines
+
+        lines.append("This computer and Git are in sync")
+        return lines
+
+    # --------------------------------------------------------
+    # Method: _gitGapSentence
+    # Purpose: Describe ahead/behind vs remote in plain words.
+    # Output: Optional[str] - None when local and remote match.
+    # --------------------------------------------------------
+    def _gitGapSentence(self) -> Optional[str]:
+        if self.ahead and self.behind:
+            return "This computer and Git both have new commits — they differ"
         if self.ahead:
-            parts.append(f"↑{self.ahead}")
+            noun = "commit" if self.ahead == 1 else "commits"
+            return (
+                f"This computer has {self.ahead} {noun} that Git does not have yet"
+            )
         if self.behind:
-            parts.append(f"↓{self.behind}")
-        if self.changelog_version:
-            parts.append(f"v{self.changelog_version}")
-        if not parts:
-            return "Clean"
-        return " · ".join(parts)
+            noun = "commit" if self.behind == 1 else "commits"
+            return (
+                f"Git has {self.behind} {noun} this computer does not have yet"
+            )
+        return None
+
+    # --------------------------------------------------------
+    # Method: summaryLabel
+    # Purpose: Single-line status (joins plainStatusLines).
+    # --------------------------------------------------------
+    def summaryLabel(self) -> str:
+        return " · ".join(self.plainStatusLines())
