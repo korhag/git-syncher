@@ -222,8 +222,27 @@ class ProjectStatus:
         ]
 
     # --------------------------------------------------------
+    # Method: _changelogKeepHint
+    # Purpose: Say how Changelog.md (the v… number) is chosen after merge.
+    # --------------------------------------------------------
+    @staticmethod
+    def _changelogKeepHint(local_ver: str, git_ver: str) -> str:
+        if local_ver == git_ver:
+            return f"Changelog stays {local_ver} (same on both sides)."
+        if local_ver == "unknown" or git_ver == "unknown":
+            return (
+                "Changelog version is whichever Changelog.md you keep "
+                "if that file differs."
+            )
+        return (
+            f"Changelog is whichever Changelog.md you keep: "
+            f"this computer’s file → {local_ver}; Git’s file → {git_ver}."
+        )
+
+    # --------------------------------------------------------
     # Method: mergeExplain
-    # Purpose: Short Now / direction / After copy for merge dialogs.
+    # Purpose: Now / direction / After copy for merge dialogs, including
+    #          branch + Changelog version after merge and after push.
     # Output: dict with body, labels, confirms, destructive blurbs.
     # --------------------------------------------------------
     def mergeExplain(self) -> dict[str, str]:
@@ -242,35 +261,87 @@ class ProjectStatus:
             if self.diverges_from_default and self.remote_default_branch
             else "remote"
         )
+        keep_hint = self._changelogKeepHint(local_ver, git_ver)
+        card_note = (
+            f"The card’s Git line shows {git} ({git_role}), not {local}."
+            if local != git
+            else f"The card’s Git line shows {git}."
+        )
 
         body = (
             f"Now\n"
             f"This computer: branch {local} · {local_ver}\n"
             f"Git ({git_role}): branch {git} · {git_ver}\n"
             f"\n"
-            f"A merge combines both. If the same file differs, you pick per file. "
-            f"Neither side auto-wins.\n"
+            f"These v… numbers come from Changelog.md on each branch. "
+            f"A merge combines commits; it does not pick the higher version. "
+            f"If the same file differs, you pick per file. Neither side auto-wins.\n"
             f"\n"
             f"① Merge Git {git} → this computer (stay on {local})\n"
-            f"Merges Git {git} ({git_ver}) into this computer’s {local} ({local_ver}). "
-            f"You stay on {local}. Git online unchanged until you Push.\n"
+            f"Merges Git {git} ({git_ver}) into this computer’s {local} ({local_ver}).\n"
+            f"After Merge (before Push):\n"
+            f"  This computer {local}: both histories. {keep_hint}\n"
+            f"  Git {git}: still {git_ver} (website unchanged).\n"
+            f"After you Push {local}:\n"
+            f"  GitHub {local}: same as this computer.\n"
+            f"  GitHub {git}: still {git_ver}.\n"
+            f"  {card_note} It can still say Git: {git} · {git_ver}.\n"
             f"\n"
             f"② Merge this computer {local} → Git {git} (then push)\n"
             f"Merges this computer’s {local} ({local_ver}) into Git {git} ({git_ver}), "
-            f"then pushes {git}. This folder returns to {local}."
+            f"then pushes {git}. This folder returns to {local}.\n"
+            f"After:\n"
+            f"  GitHub {git}: both histories, pushed. {keep_hint}\n"
+            f"  This computer: back on {local} · still {local_ver}.\n"
+            f"  Card: This computer {local} · {local_ver} / Git {git} · "
+            f"(same Changelog you kept).\n"
+            f"\n"
+            f"Make this computer match Git (not a merge)\n"
+            f"After: this computer becomes Git’s {git} · {git_ver}. "
+            f"Git online unchanged.\n"
+            f"\n"
+            f"Overwrite remote (not a merge)\n"
+            f"After: GitHub {local}"
+            + (f" and GitHub {git}" if local != git else "")
+            + f" become this computer’s history · {local_ver}. No combine."
         )
 
         bring_label = f"① Merge Git {git} → this computer (stay on {local})"
         bring_confirm = (
-            f"Merges: Git {git} ({git_ver}) into this computer’s {local} ({local_ver})\n"
-            f"After: you stay on {local}, with both histories\n"
-            f"Git online: unchanged until you Push"
+            f"Merges: Git {git} ({git_ver}) into this computer’s {local} ({local_ver}).\n"
+            f"\n"
+            f"After Merge (before Push):\n"
+            f"  This computer {local}: both histories. {keep_hint}\n"
+            f"  Git {git}: still {git_ver}.\n"
+            f"\n"
+            f"After you Push {local}:\n"
+            f"  GitHub {local}: same as this computer.\n"
+            f"  GitHub {git}: still {git_ver}.\n"
+            f"  {card_note}"
         )
         send_label = f"② Merge this computer {local} → Git {git} (then push)"
         send_confirm = (
             f"Merges: this computer’s {local} ({local_ver}) into Git {git} ({git_ver}), "
-            f"then pushes {git}\n"
-            f"After: Git {git} has both; this folder returns to {local}"
+            f"then pushes {git}.\n"
+            f"\n"
+            f"After:\n"
+            f"  GitHub {git}: both histories, pushed. {keep_hint}\n"
+            f"  This computer: back on {local} · still {local_ver}.\n"
+            f"  Card: This computer {local} · {local_ver} / Git {git} · "
+            f"(same Changelog you kept)."
+        )
+
+        match_description = (
+            f"Destructive: throw away this computer’s {local}; take Git {git} "
+            f"({git_ver}). No combine.\n"
+            f"After: this computer {git} · {git_ver}. Git online still {git} · {git_ver}."
+        )
+        overwrite_description = (
+            f"Destructive: replace Git with this computer’s {local} ({local_ver}). "
+            f"No combine.\n"
+            f"After: GitHub {local}"
+            + (f" and GitHub {git} (website default)" if local != git else "")
+            + f": {local_ver}. This computer stays on {local} · {local_ver}."
         )
 
         return {
@@ -281,14 +352,8 @@ class ProjectStatus:
             "send_label": send_label,
             "send_description": send_confirm,
             "send_confirm": send_confirm,
-            "match_description": (
-                f"Destructive: throw away this computer’s {local}; take Git {git} "
-                f"({git_ver}). No combine."
-            ),
-            "overwrite_description": (
-                f"Destructive: replace Git with this computer’s {local} ({local_ver}). "
-                f"No combine."
-            ),
+            "match_description": match_description,
+            "overwrite_description": overwrite_description,
             "local_branch": local,
             "git_branch": git,
         }

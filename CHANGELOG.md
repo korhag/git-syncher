@@ -5,6 +5,13 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-17
+
+### Changed
+
+- Merge dialogs spell out **after merge** and **after push**: which branch keeps which Changelog version (`v…`), that GitHub `main` can stay old until you update it, and that the card’s Git line is the website default
+- Confirm screens repeat the same After table so ① / ② / Match / Overwrite are not just direction labels
+
 ## [1.7.4] - 2026-08-17
 
 ### Added

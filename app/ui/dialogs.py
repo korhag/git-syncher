@@ -56,7 +56,7 @@ class Dialogs:
             page.update()
 
         content_controls: list[ft.Control] = [
-            ft.Text(outcome.message, size=14, selectable=True),
+            ft.Text(outcome.message, size=13, selectable=True),
         ]
         if outcome.details:
             content_controls.append(
@@ -75,8 +75,8 @@ class Dialogs:
                 content_controls,
                 tight=True,
                 scroll=ft.ScrollMode.AUTO,
-                width=480,
-                height=320,
+                width=520,
+                height=420,
             ),
             actions=buttons,
             actions_alignment=ft.MainAxisAlignment.END,
@@ -117,12 +117,14 @@ class Dialogs:
             title=ft.Text(title),
             content=ft.Column(
                 [
-                    ft.Text(message),
+                    ft.Text(message, size=13, selectable=True),
                     checkbox,
                     error_text,
                 ],
                 tight=True,
-                width=400,
+                scroll=ft.ScrollMode.AUTO,
+                width=520,
+                height=360,
             ),
             actions=[
                 ft.TextButton("Cancel", on_click=handle_cancel),

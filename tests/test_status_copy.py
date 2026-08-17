@@ -132,11 +132,21 @@ class TestPlainStatusLines:
         assert "branch master" in explain["body"]
         assert "branch main" in explain["body"]
         assert "Neither side auto-wins" in explain["body"]
+        assert "Changelog.md" in explain["body"]
+        assert "After Merge (before Push)" in explain["body"]
+        assert "After you Push master" in explain["body"]
+        assert "GitHub main: still v1.2.1" in explain["body"]
+        assert "this computer’s file → v1.4.1" in explain["body"]
+        assert "GitHub main: both histories, pushed" in explain["body"]
         assert "into" in explain["bring_description"]
-        assert "stay on master" in explain["bring_description"]
-        assert "pushes main" in explain["send_description"]
         assert "stay on master" in explain["bring_label"]
+        assert "GitHub master: same as this computer" in explain["bring_confirm"]
+        assert "pushes main" in explain["send_description"]
         assert "then push" in explain["send_label"]
+        assert "back on master" in explain["send_confirm"]
+        assert "this computer main · v1.2.1" in explain["match_description"]
+        assert "v1.4.1" in explain["overwrite_description"]
+        assert "GitHub main (website default)" in explain["overwrite_description"]
 
     # --------------------------------------------------------
     # Method: testUpstreamMissing
