@@ -1,0 +1,559 @@
+from __future__ import annotations
+
+from typing import Callable, Optional
+
+import flet as ft
+
+from app.core.actions import ActionChoice, ActionId, ActionOutcome
+from app.core.changelog import ChangelogParser
+from app.core.git_service import GitService
+from app.core.store import VaultStore
+from app.models.project import FileChangeKind, ProjectConfig, ProjectStatus, SuggestedAction
+from app.ui.dashboard import DashboardView, _ACTION_META
+from app.ui.dialogs import Dialogs
+
+
+# ------------------------------------------------------------
+# Class: ProjectDetailView
+# Purpose: Per-project actions — commit, pull, push, file diffs,
+#          discard, and guided recovery when Git fails.
+# ------------------------------------------------------------
+class ProjectDetailView:
+    # --------------------------------------------------------
+    # Method: __init__
+    # Purpose: Bind project context and navigation.
+    # --------------------------------------------------------
+    def __init__(
+        self,
+        page: ft.Page,
+        store: VaultStore,
+        git: GitService,
+        project_id: str,
+        on_back: Callable[[], None],
+        dashboard: DashboardView,
+    ) -> None:
+        self.page = page
+        self.store = store
+        self.git = git
+        self.project_id = project_id
+        self.on_back = on_back
+        self.dashboard = dashboard
+        self.status: Optional[ProjectStatus] = None
+        self.body = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=12)
+        self.header_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+
+    # --------------------------------------------------------
+    # Property: project
+    # Purpose: Current ProjectConfig or None if removed.
+    # --------------------------------------------------------
+    @property
+    def project(self) -> Optional[ProjectConfig]:
+        return self.store.getProject(self.project_id)
+
+    # --------------------------------------------------------
+    # Method: build
+    # Purpose: Construct detail layout and load status.
+    # --------------------------------------------------------
+    def build(self) -> ft.Control:
+        project = self.project
+        title = project.name if project else "Project"
+
+        toolbar = ft.Row(
+            [
+                ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="Back", on_click=lambda _e: self.on_back()),
+                ft.Text(title, size=22, weight=ft.FontWeight.BOLD, expand=True),
+                ft.IconButton(
+                    icon=ft.Icons.SETTINGS,
+                    tooltip="Project settings",
+                    on_click=lambda _e: self._editSettings(),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    tooltip="Remove from Syncher",
+                    icon_color=ft.Colors.RED_400,
+                    on_click=lambda _e: self._removeProject(),
+                ),
+            ]
+        )
+
+        actions = ft.Row(
+            [
+                ft.FilledButton("Refresh", icon=ft.Icons.REFRESH, on_click=lambda _e: self.reload()),
+                ft.OutlinedButton("Commit", icon=ft.Icons.COMMIT, on_click=lambda _e: self.doCommit()),
+                ft.OutlinedButton("Pull", icon=ft.Icons.DOWNLOAD, on_click=lambda _e: self.doPull()),
+                ft.OutlinedButton("Push", icon=ft.Icons.UPLOAD, on_click=lambda _e: self.doPush()),
+            ],
+            wrap=True,
+            spacing=8,
+        )
+
+        self.reload(silent=True)
+        return ft.Container(
+            expand=True,
+            padding=20,
+            content=ft.Column(
+                [
+                    toolbar,
+                    self.header_status,
+                    actions,
+                    ft.Divider(),
+                    self.body,
+                ],
+                expand=True,
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Method: reload
+    # Purpose: Refresh this project's Git status and file list.
+    # --------------------------------------------------------
+    def reload(self, silent: bool = False) -> None:
+        project = self.project
+        if project is None:
+            Dialogs.showSnack(self.page, "Project no longer exists.", error=True)
+            self.on_back()
+            return
+        self.status = self.git.getStatus(project, fetch=True)
+        self.dashboard.statuses[project.id] = self.status
+        self._renderBody()
+        if not silent:
+            Dialogs.showSnack(self.page, "Status updated")
+        self.page.update()
+
+    # --------------------------------------------------------
+    # Method: _renderBody
+    # Purpose: Fill body with summary + changed files.
+    # --------------------------------------------------------
+    def _renderBody(self) -> None:
+        self.body.controls.clear()
+        project = self.project
+        status = self.status
+        if project is None or status is None:
+            self.body.controls.append(ft.Text("No data"))
+            return
+
+        action = status.suggested_action
+        label, color = _ACTION_META.get(action, ("Check", ft.Colors.GREY_400))
+        self.header_status.value = status.summaryLabel()
+
+        suggestion_row = ft.Container(
+            padding=12,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            border_radius=8,
+            content=ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text("Suggested next step", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                            ft.Text(label, size=18, weight=ft.FontWeight.BOLD, color=color),
+                            ft.Text(self._suggestionHint(status), size=13),
+                        ],
+                        expand=True,
+                        spacing=2,
+                    ),
+                    ft.FilledButton(
+                        label,
+                        on_click=lambda _e: self._runSuggested(),
+                    ),
+                ]
+            ),
+        )
+        self.body.controls.append(suggestion_row)
+
+        if status.changelog_version:
+            tag_note = status.last_tag or "(no tags)"
+            newer = ChangelogParser.isChangelogNewerThanTag(
+                status.changelog_version, status.last_tag
+            )
+            self.body.controls.append(
+                ft.Text(
+                    f"Changelog v{status.changelog_version} · latest tag {tag_note}"
+                    + (" · changelog is newer" if newer else ""),
+                    size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                )
+            )
+
+        self.body.controls.append(
+            ft.Text("Changed files", size=16, weight=ft.FontWeight.W_600)
+        )
+
+        if not status.changes:
+            self.body.controls.append(
+                ft.Text("Working tree clean.", color=ft.Colors.ON_SURFACE_VARIANT)
+            )
+            return
+
+        for change in status.changes:
+            self.body.controls.append(self._fileRow(change.path, change.kind))
+
+        self.body.controls.append(ft.Container(height=8))
+        self.body.controls.append(
+            ft.OutlinedButton(
+                "Discard all local changes",
+                icon=ft.Icons.DELETE_SWEEP,
+                style=ft.ButtonStyle(color=ft.Colors.RED_400),
+                on_click=lambda _e: self._discardAll(),
+            )
+        )
+
+    # --------------------------------------------------------
+    # Method: _suggestionHint
+    # Purpose: One-line explanation under the suggested action.
+    # --------------------------------------------------------
+    @staticmethod
+    def _suggestionHint(status: ProjectStatus) -> str:
+        if status.suggested_action == SuggestedAction.COMMIT:
+            return "You have uncommitted local changes."
+        if status.suggested_action == SuggestedAction.PUSH:
+            return f"Local is {status.ahead} commit(s) ahead of remote."
+        if status.suggested_action == SuggestedAction.PULL:
+            return f"Remote is {status.behind} commit(s) ahead of local."
+        if status.suggested_action == SuggestedAction.RESOLVE:
+            if status.ahead and status.behind:
+                return "Branches have diverged. Compare, pull carefully, or overwrite remote."
+            return "Conflicts or mixed state need a choice."
+        if status.suggested_action == SuggestedAction.SYNCED:
+            return "Local and remote look aligned."
+        if status.suggested_action == SuggestedAction.NOT_A_REPO:
+            return "Initialize Git from project settings."
+        if status.suggested_action == SuggestedAction.MISSING_PATH:
+            return "The folder path no longer exists."
+        return "Open settings or refresh after fixing the issue."
+
+    # --------------------------------------------------------
+    # Method: _fileRow
+    # Purpose: Row with compare / discard / conflict actions.
+    # --------------------------------------------------------
+    def _fileRow(self, file_path: str, kind: FileChangeKind) -> ft.Control:
+        is_conflict = kind == FileChangeKind.CONFLICT
+        buttons: list[ft.Control] = [
+            ft.TextButton(
+                "Compare",
+                icon=ft.Icons.COMPARE,
+                on_click=lambda _e, p=file_path: self._compareFile(p),
+            ),
+            ft.TextButton(
+                "Discard",
+                icon=ft.Icons.UNDO,
+                style=ft.ButtonStyle(color=ft.Colors.RED_400),
+                on_click=lambda _e, p=file_path: self._discardFile(p),
+            ),
+        ]
+        if is_conflict:
+            buttons.extend(
+                [
+                    ft.TextButton(
+                        "Keep local",
+                        on_click=lambda _e, p=file_path: self._keepLocal(p),
+                    ),
+                    ft.TextButton(
+                        "Take remote",
+                        on_click=lambda _e, p=file_path: self._takeRemote(p),
+                    ),
+                ]
+            )
+
+        return ft.Container(
+            padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+            border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+            content=ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text(file_path, size=13, expand=True),
+                            ft.Text(kind.value, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+                        ],
+                        expand=True,
+                        spacing=0,
+                    ),
+                    ft.Row(buttons, tight=True),
+                ]
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Method: _runSuggested
+    # Purpose: Execute the card's suggested primary action.
+    # --------------------------------------------------------
+    def _runSuggested(self) -> None:
+        if self.status is None:
+            return
+        mapping = {
+            SuggestedAction.COMMIT: self.doCommit,
+            SuggestedAction.PUSH: self.doPush,
+            SuggestedAction.PULL: self.doPull,
+            SuggestedAction.RESOLVE: self._openResolveHelp,
+            SuggestedAction.NOT_A_REPO: self._editSettings,
+        }
+        handler = mapping.get(self.status.suggested_action)
+        if handler:
+            handler()
+        else:
+            Dialogs.showSnack(self.page, "Nothing to do — already synced.")
+
+    # --------------------------------------------------------
+    # Method: _openResolveHelp
+    # Purpose: Present resolve choices when branches diverge.
+    # --------------------------------------------------------
+    def _openResolveHelp(self) -> None:
+        outcome = ActionOutcome(
+            title="Resolve differences",
+            message="Local and remote have different commits (or conflicts). Pick a safe path.",
+            choices=[
+                ActionChoice(ActionId.VIEW_DIFFS, "View local changes"),
+                ActionChoice(ActionId.PULL_FIRST, "Pull first"),
+                ActionChoice(
+                    ActionId.OVERWRITE_REMOTE,
+                    "Overwrite remote",
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(
+                    ActionId.DISCARD_THEN_PULL,
+                    "Discard local then pull",
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(ActionId.CANCEL, "Cancel"),
+            ],
+        )
+        self._handleOutcome(outcome, retry=self._openResolveHelp)
+
+    # --------------------------------------------------------
+    # Git actions
+    # --------------------------------------------------------
+    def doCommit(self) -> None:
+        project = self.project
+        if not project:
+            return
+        suggested = ChangelogParser.suggestCommitMessage(project.path) or ""
+        Dialogs.showCommit(self.page, suggested, on_commit=self._commitWithMessage)
+
+    def _commitWithMessage(self, message: str) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.commit(project, message)
+        self._handleOutcome(outcome, retry=lambda: self._commitWithMessage(message))
+        if outcome.success:
+            self.reload(silent=True)
+
+    def doPull(self) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.pull(project)
+        self._handleOutcome(outcome, retry=self.doPull)
+        if outcome.success:
+            self.reload(silent=True)
+
+    def doPush(self, force: bool = False, set_upstream: bool = False) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def run() -> None:
+            outcome = self.git.push(project, force=force, set_upstream=set_upstream)
+            self._handleOutcome(
+                outcome,
+                retry=lambda: self.doPush(force=force, set_upstream=set_upstream),
+            )
+            if outcome.success:
+                self.reload(silent=True)
+
+        if force:
+            Dialogs.showConfirm(
+                self.page,
+                title="Overwrite remote?",
+                message=(
+                    "This force-pushes your local branch and can erase commits on the remote. "
+                    "Only continue if you are sure."
+                ),
+                confirm_label="Overwrite remote",
+                on_confirm=run,
+            )
+        else:
+            run()
+
+    # --------------------------------------------------------
+    # Method: _handleOutcome
+    # Purpose: Show success snack or choice dialog for failures.
+    # --------------------------------------------------------
+    def _handleOutcome(
+        self,
+        outcome: ActionOutcome,
+        retry: Optional[Callable[[], None]] = None,
+    ) -> None:
+        if outcome.success:
+            Dialogs.showSnack(self.page, outcome.title + (f" — {outcome.message}" if outcome.message else ""))
+            return
+
+        def on_choice(action_id: ActionId) -> None:
+            self._dispatchAction(action_id, retry=retry)
+
+        Dialogs.showChoice(self.page, outcome, on_choice)
+
+    # --------------------------------------------------------
+    # Method: _dispatchAction
+    # Purpose: Execute a guided ActionId from a choice dialog.
+    # --------------------------------------------------------
+    def _dispatchAction(
+        self,
+        action_id: ActionId,
+        retry: Optional[Callable[[], None]] = None,
+    ) -> None:
+        project = self.project
+        if action_id == ActionId.CANCEL:
+            return
+        if action_id == ActionId.RETRY and retry:
+            retry()
+            return
+        if action_id == ActionId.REENTER_PAT or action_id == ActionId.OPEN_SETTINGS:
+            self._editSettings()
+            return
+        if action_id == ActionId.SET_REMOTE:
+            self._editSettings()
+            return
+        if action_id == ActionId.VIEW_DIFFS:
+            self.reload(silent=True)
+            Dialogs.showSnack(self.page, "Review changed files below, then choose an action.")
+            return
+        if action_id == ActionId.PULL_FIRST:
+            self.doPull()
+            return
+        if action_id == ActionId.OVERWRITE_REMOTE:
+            self.doPush(force=True, set_upstream=False)
+            return
+        if action_id == ActionId.FIRST_PUSH:
+            self.doPush(force=False, set_upstream=True)
+            return
+        if not project:
+            return
+        if action_id == ActionId.STASH_THEN_PULL:
+            outcome = self.git.stashThenPull(project)
+            self._handleOutcome(outcome, retry=lambda: self._dispatchAction(action_id))
+            if outcome.success:
+                self.reload(silent=True)
+            return
+        if action_id == ActionId.DISCARD_THEN_PULL:
+            Dialogs.showConfirm(
+                self.page,
+                title="Discard local changes?",
+                message="All uncommitted local changes will be permanently deleted, then pull will run.",
+                confirm_label="Discard and pull",
+                on_confirm=lambda: self._runDiscardThenPull(),
+            )
+            return
+        if action_id == ActionId.INIT_REPO:
+            outcome = self.git.initRepo(project.path)
+            self._handleOutcome(outcome)
+            if outcome.success:
+                self.reload(silent=True)
+            return
+
+    def _runDiscardThenPull(self) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.discardThenPull(project)
+        self._handleOutcome(outcome)
+        if outcome.success:
+            self.reload(silent=True)
+
+    # --------------------------------------------------------
+    # Per-file helpers
+    # --------------------------------------------------------
+    def _compareFile(self, file_path: str) -> None:
+        project = self.project
+        if not project:
+            return
+        diff_text = self.git.getDiff(project.path, file_path)
+        Dialogs.showDiff(self.page, file_path, diff_text)
+
+    def _discardFile(self, file_path: str) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def run() -> None:
+            outcome = self.git.discardFile(project.path, file_path)
+            self._handleOutcome(outcome)
+            if outcome.success:
+                self.reload(silent=True)
+
+        Dialogs.showConfirm(
+            self.page,
+            title="Discard file changes?",
+            message=f"Discard local changes to:\n{file_path}",
+            confirm_label="Discard",
+            on_confirm=run,
+        )
+
+    def _discardAll(self) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def run() -> None:
+            outcome = self.git.discardAll(project.path)
+            self._handleOutcome(outcome)
+            if outcome.success:
+                self.reload(silent=True)
+
+        Dialogs.showConfirm(
+            self.page,
+            title="Discard ALL local changes?",
+            message="This resets the working tree and removes untracked files. Cannot be undone.",
+            confirm_label="Discard all",
+            on_confirm=run,
+        )
+
+    def _keepLocal(self, file_path: str) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.resolveFileKeepLocal(project.path, file_path)
+        self._handleOutcome(outcome)
+        if outcome.success:
+            self.reload(silent=True)
+
+    def _takeRemote(self, file_path: str) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.resolveFileTakeRemote(project.path, file_path)
+        self._handleOutcome(outcome)
+        if outcome.success:
+            self.reload(silent=True)
+
+    # --------------------------------------------------------
+    # Settings / remove
+    # --------------------------------------------------------
+    def _editSettings(self) -> None:
+        project = self.project
+        if not project:
+            return
+        self.dashboard.openAddProjectDialog(existing=project)
+
+    def _removeProject(self) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def confirm() -> None:
+            self.store.removeProject(project.id)
+            self.dashboard.statuses.pop(project.id, None)
+            Dialogs.showSnack(self.page, "Project removed from Syncher")
+            self.on_back()
+
+        Dialogs.showConfirm(
+            self.page,
+            title="Remove project?",
+            message=(
+                f"Remove “{project.name}” from Git Syncher?\n"
+                "This does not delete files on disk — only the Syncher entry and stored PAT."
+            ),
+            confirm_label="Remove",
+            on_confirm=confirm,
+        )
