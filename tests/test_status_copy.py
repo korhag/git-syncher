@@ -92,6 +92,34 @@ class TestPlainStatusLines:
         assert not any("ahead of tag" in line.lower() for line in lines)
 
     # --------------------------------------------------------
+    # Method: testDivergesFromDefault
+    # --------------------------------------------------------
+    def testDivergesFromDefault(self) -> None:
+        status = _status(
+            branch="master",
+            remote_default_branch="main",
+            diverges_from_default=True,
+            suggested_action=SuggestedAction.RESOLVE,
+        )
+        lines = status.plainStatusLines()
+        assert any("This computer is on master" in line for line in lines)
+        assert any("default branch is main" in line for line in lines)
+        assert any("not the same" in line for line in lines)
+        assert not any("in sync" in line.lower() for line in lines)
+
+    # --------------------------------------------------------
+    # Method: testUpstreamMissing
+    # --------------------------------------------------------
+    def testUpstreamMissing(self) -> None:
+        status = _status(
+            branch="feature",
+            upstream_missing=True,
+            suggested_action=SuggestedAction.RESOLVE,
+        )
+        lines = status.plainStatusLines()
+        assert any("No origin/feature" in line for line in lines)
+
+    # --------------------------------------------------------
     # Method: testMissingPathAndNotRepo
     # --------------------------------------------------------
     def testMissingPathAndNotRepo(self) -> None:
@@ -141,6 +169,21 @@ class TestVersionSummaryLines:
         )
         lines = status.versionSummaryLines()
         assert "local and Git match" in lines[2]
+
+    # --------------------------------------------------------
+    # Method: testDivergesShowsDefaultBranchInGitLine
+    # --------------------------------------------------------
+    def testDivergesShowsDefaultBranchInGitLine(self) -> None:
+        status = _status(
+            branch="master",
+            remote_default_branch="main",
+            diverges_from_default=True,
+            changelog_version="2.4.1",
+            git_changelog_version="2.2.1",
+            last_tag="v2.2.1",
+        )
+        lines = status.versionSummaryLines()
+        assert "Git (latest commit on origin/main): v2.2.1" in lines[1]
 
     # --------------------------------------------------------
     # Method: testMissingGitChangelog

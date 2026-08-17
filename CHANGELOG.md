@@ -5,6 +5,19 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-17
+
+### Changed
+
+- Status compares this computer to Git’s **default branch** (`origin/HEAD`), not only `origin/<current branch>`
+- Globe opens the remote at `/tree/<branch>` so the browser matches the branch on the card
+- **Make this computer match Git** resets to the remote **default** branch first (e.g. `origin/main`)
+
+### Fixed
+
+- No longer reports **Synced** when on `master` matching `origin/master` while GitHub’s default (`main`) has different commits
+- Missing `origin/<current branch>` no longer looks like a clean sync (suggests Resolve instead)
+
 ## [1.3.0] - 2026-08-17
 
 ### Added

@@ -683,7 +683,12 @@ class ProjectDetailView:
             remote = self.status.remote_url
         elif project.remote_url:
             remote = project.remote_url
-        if not openRemoteInBrowser(remote):
+        branch = ""
+        if self.status and self.status.branch:
+            branch = self.status.branch
+        elif project.default_branch:
+            branch = project.default_branch
+        if not openRemoteInBrowser(remote, branch=branch):
             Dialogs.showSnack(
                 self.page,
                 "No remote URL set — open project settings and add the repo URL.",

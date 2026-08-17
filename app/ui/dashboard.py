@@ -251,8 +251,19 @@ class DashboardView:
         elif project.remote_url:
             remote = project.remote_url
 
-        def open_remote(_e: ft.ControlEvent, url: str = remote) -> None:
-            if not openRemoteInBrowser(url):
+        globe_branch = (
+            branch_name
+            or (status.branch if status else "")
+            or project.default_branch
+            or ""
+        )
+
+        def open_remote(
+            _e: ft.ControlEvent,
+            url: str = remote,
+            branch: str = globe_branch,
+        ) -> None:
+            if not openRemoteInBrowser(url, branch=branch):
                 Dialogs.showSnack(
                     self.page,
                     "No remote URL set — open project settings and add the repo URL.",

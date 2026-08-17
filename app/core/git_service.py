@@ -200,14 +200,32 @@ class GitService:
 
         status.changes = self.listChanges(root)
         status.dirty = len(status.changes) > 0
-        ahead, behind = self._aheadBehind(root, status.branch)
+        ahead, behind, upstream_ok = self._aheadBehind(root, status.branch)
         status.ahead = ahead
         status.behind = behind
+        status.upstream_missing = bool(status.branch) and not upstream_ok
+
+        status.remote_default_branch = self.detectRemoteDefaultBranch(root)
+        if (
+            status.branch
+            and status.remote_default_branch
+            and status.branch != status.remote_default_branch
+        ):
+            status.diverges_from_default = self._refsDiffer(
+                root,
+                "HEAD",
+                f"origin/{status.remote_default_branch}",
+            )
+
         status.last_tag = self._latestTag(root)
         status.changelog_version = ChangelogParser.readVersion(root)
+        # Prefer Git's default branch for "what's on GitHub" when it differs.
+        remote_version_branch = status.branch or project.default_branch
+        if status.diverges_from_default and status.remote_default_branch:
+            remote_version_branch = status.remote_default_branch
         status.git_changelog_version = self.readRemoteChangelogVersion(
             root,
-            status.branch or project.default_branch,
+            remote_version_branch,
         )
         status.suggested_action = self._suggestAction(status)
         return status
@@ -593,36 +611,60 @@ class GitService:
         )
 
     # --------------------------------------------------------
+    # Method: detectRemoteDefaultBranch
+    # Purpose: Branch name pointed at by origin/HEAD (GitHub default).
+    # --------------------------------------------------------
+    def detectRemoteDefaultBranch(self, path: str | Path) -> str:
+        root = Path(path)
+        head = self._run(
+            ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            cwd=root,
+        )
+        if head.ok:
+            ref_path = head.stdout.strip()
+            prefix = "refs/remotes/origin/"
+            if ref_path.startswith(prefix):
+                return ref_path[len(prefix) :]
+        for name in ("main", "master"):
+            check = self._run(["rev-parse", "--verify", f"origin/{name}"], cwd=root)
+            if check.ok:
+                return name
+        return ""
+
+    # --------------------------------------------------------
+    # Method: _refsDiffer
+    # Purpose: True when two refs resolve to different commits.
+    # --------------------------------------------------------
+    def _refsDiffer(self, root: Path, ref_a: str, ref_b: str) -> bool:
+        a = self._run(["rev-parse", "--verify", ref_a], cwd=root)
+        b = self._run(["rev-parse", "--verify", ref_b], cwd=root)
+        if not a.ok or not b.ok:
+            return False
+        return a.stdout.strip() != b.stdout.strip()
+
+    # --------------------------------------------------------
     # Method: _resolveOriginBranch
-    # Purpose: Pick origin/<branch> for hard reset (current, HEAD, master/main).
+    # Purpose: Pick origin/<branch> for hard reset — Git default first.
     # --------------------------------------------------------
     def _resolveOriginBranch(self, root: Path, project: ProjectConfig) -> str:
         candidates: list[str] = []
-        current = self.detectBranch(root)
-        if current:
-            candidates.append(current)
+        remote_default = self.detectRemoteDefaultBranch(root)
+        if remote_default:
+            candidates.append(remote_default)
         if project.default_branch and project.default_branch not in candidates:
             candidates.append(project.default_branch)
-        for name in ("master", "main"):
+        for name in ("main", "master"):
             if name not in candidates:
                 candidates.append(name)
+        current = self.detectBranch(root)
+        if current and current not in candidates:
+            candidates.append(current)
 
         for name in candidates:
             ref = f"origin/{name}"
             check = self._run(["rev-parse", "--verify", ref], cwd=root)
             if check.ok:
                 return ref
-
-        # Symbolic origin/HEAD -> origin/somebranch
-        head = self._run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd=root)
-        if head.ok:
-            ref_path = head.stdout.strip()
-            # e.g. refs/remotes/origin/master
-            if ref_path.startswith("refs/remotes/"):
-                short = ref_path[len("refs/remotes/") :]
-                check = self._run(["rev-parse", "--verify", short], cwd=root)
-                if check.ok:
-                    return short
         return ""
 
     # --------------------------------------------------------
@@ -661,6 +703,10 @@ class GitService:
             return SuggestedAction.NOT_A_REPO
         if any(change.kind == FileChangeKind.CONFLICT for change in status.changes):
             return SuggestedAction.RESOLVE
+        if status.diverges_from_default:
+            return SuggestedAction.RESOLVE
+        if status.upstream_missing:
+            return SuggestedAction.RESOLVE
         if status.dirty:
             return SuggestedAction.COMMIT
         if status.ahead and status.behind:
@@ -678,30 +724,31 @@ class GitService:
     # --------------------------------------------------------
     # Method: _aheadBehind
     # Purpose: Count commits ahead/behind origin/<branch>.
+    # Output: (ahead, behind, upstream_ok)
     # --------------------------------------------------------
-    def _aheadBehind(self, root: Path, branch: str) -> tuple[int, int]:
+    def _aheadBehind(self, root: Path, branch: str) -> tuple[int, int, bool]:
         if not branch:
-            return 0, 0
+            return 0, 0, False
         upstream = f"origin/{branch}"
         # Verify upstream exists
         check = self._run(["rev-parse", "--verify", upstream], cwd=root)
         if not check.ok:
-            return 0, 0
+            return 0, 0, False
         result = self._run(
             ["rev-list", "--left-right", "--count", f"{upstream}...HEAD"],
             cwd=root,
         )
         if not result.ok:
-            return 0, 0
+            return 0, 0, False
         parts = result.stdout.strip().split()
         if len(parts) != 2:
-            return 0, 0
+            return 0, 0, False
         try:
             behind = int(parts[0])
             ahead = int(parts[1])
-            return ahead, behind
+            return ahead, behind, True
         except ValueError:
-            return 0, 0
+            return 0, 0, False
 
     # --------------------------------------------------------
     # Method: latestTag

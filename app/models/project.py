@@ -119,6 +119,9 @@ class ProjectStatus:
     is_repo: bool = False
     path_exists: bool = True
     branch: str = ""
+    remote_default_branch: str = ""
+    diverges_from_default: bool = False
+    upstream_missing: bool = False
     ahead: int = 0
     behind: int = 0
     dirty: bool = False
@@ -158,7 +161,10 @@ class ProjectStatus:
             else "none (no Changelog on that commit, or remote not fetched)"
         )
         tag_label = self.last_tag if self.last_tag else "none"
-        branch = self.branch or "…"
+        # Show Git's default branch when this computer is on a different line of history.
+        git_branch = self.branch or "…"
+        if self.diverges_from_default and self.remote_default_branch:
+            git_branch = self.remote_default_branch
         match_note = ""
         if self.changelog_version and self.git_changelog_version:
             cmp = ChangelogParser.compareVersions(
@@ -172,7 +178,7 @@ class ProjectStatus:
 
         return [
             f"This computer: {local_label}",
-            f"Git (latest commit on origin/{branch}): {git_label}",
+            f"Git (latest commit on origin/{git_branch}): {git_label}",
             f"Git tag: {tag_label}{match_note}",
         ]
 
@@ -193,6 +199,27 @@ class ProjectStatus:
         lines: list[str] = []
         if self.branch:
             lines.append(f"Branch: {self.branch}")
+
+        if self.diverges_from_default and self.remote_default_branch:
+            lines.append(
+                f"This computer is on {self.branch}. "
+                f"Git’s default branch is {self.remote_default_branch}. "
+                "They are not the same."
+            )
+            if self.dirty:
+                count = len(self.changes)
+                noun = "file" if count == 1 else "files"
+                lines.append(
+                    f"{count} {noun} changed on this computer (not saved to Git yet)"
+                )
+            return lines
+
+        if self.upstream_missing:
+            lines.append(
+                f"No origin/{self.branch or '…'} on Git — "
+                "this computer’s branch is not on the remote (or was not fetched)."
+            )
+            return lines
 
         if self.dirty:
             count = len(self.changes)
