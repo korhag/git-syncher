@@ -3,6 +3,11 @@ from __future__ import annotations
 import flet as ft
 
 from app.core.git_service import GitService
+from app.core.instance_lock import (
+    acquireAppLock,
+    releaseAppLock,
+    showAlreadyRunningAndExit,
+)
 from app.core.store import VaultStore
 from app.ui.dashboard import DashboardView
 from app.ui.project_detail import ProjectDetailView
@@ -25,6 +30,7 @@ class GitSyncherApp:
         self.git = GitService()
         self.dashboard: DashboardView | None = None
         self._configurePage()
+        page.on_close = self._onWindowClose
         self.showUnlock()
 
     # --------------------------------------------------------
@@ -40,6 +46,13 @@ class GitSyncherApp:
         self.page.window.min_height = 520
         self.page.padding = 0
         self.page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL)
+
+    # --------------------------------------------------------
+    # Method: _onWindowClose
+    # Purpose: Release the single-instance lock on exit.
+    # --------------------------------------------------------
+    def _onWindowClose(self, _e: ft.ControlEvent) -> None:
+        releaseAppLock()
 
     # --------------------------------------------------------
     # Method: clear
@@ -118,7 +131,7 @@ class GitSyncherApp:
 
 # ------------------------------------------------------------
 # Function: main
-# Purpose: Flet entrypoint.
+# Purpose: Flet entrypoint (lock already held by __main__).
 # ------------------------------------------------------------
 def main(page: ft.Page) -> None:
     GitSyncherApp(page)
@@ -128,4 +141,9 @@ def main(page: ft.Page) -> None:
 # Script entry: python -m app.main
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    ft.run(main)
+    if not acquireAppLock():
+        showAlreadyRunningAndExit()
+    try:
+        ft.run(main)
+    finally:
+        releaseAppLock()

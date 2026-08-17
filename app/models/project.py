@@ -222,6 +222,78 @@ class ProjectStatus:
         ]
 
     # --------------------------------------------------------
+    # Method: mergeExplain
+    # Purpose: Short Now / direction / After copy for merge dialogs.
+    # Output: dict with body, labels, confirms, destructive blurbs.
+    # --------------------------------------------------------
+    def mergeExplain(self) -> dict[str, str]:
+        local = self.branch or "…"
+        git = self.comparedGitBranch() or "…"
+        local_ver = (
+            f"v{self.changelog_version}" if self.changelog_version else "unknown"
+        )
+        git_ver = (
+            f"v{self.git_changelog_version}"
+            if self.git_changelog_version
+            else "unknown"
+        )
+        git_role = (
+            "website default"
+            if self.diverges_from_default and self.remote_default_branch
+            else "remote"
+        )
+
+        body = (
+            f"Now\n"
+            f"This computer: branch {local} · {local_ver}\n"
+            f"Git ({git_role}): branch {git} · {git_ver}\n"
+            f"\n"
+            f"A merge combines both. If the same file differs, you pick per file. "
+            f"Neither side auto-wins.\n"
+            f"\n"
+            f"① Merge Git {git} → this computer (stay on {local})\n"
+            f"Merges Git {git} ({git_ver}) into this computer’s {local} ({local_ver}). "
+            f"You stay on {local}. Git online unchanged until you Push.\n"
+            f"\n"
+            f"② Merge this computer {local} → Git {git} (then push)\n"
+            f"Merges this computer’s {local} ({local_ver}) into Git {git} ({git_ver}), "
+            f"then pushes {git}. This folder returns to {local}."
+        )
+
+        bring_label = f"① Merge Git {git} → this computer (stay on {local})"
+        bring_confirm = (
+            f"Merges: Git {git} ({git_ver}) into this computer’s {local} ({local_ver})\n"
+            f"After: you stay on {local}, with both histories\n"
+            f"Git online: unchanged until you Push"
+        )
+        send_label = f"② Merge this computer {local} → Git {git} (then push)"
+        send_confirm = (
+            f"Merges: this computer’s {local} ({local_ver}) into Git {git} ({git_ver}), "
+            f"then pushes {git}\n"
+            f"After: Git {git} has both; this folder returns to {local}"
+        )
+
+        return {
+            "body": body,
+            "bring_label": bring_label,
+            "bring_description": bring_confirm,
+            "bring_confirm": bring_confirm,
+            "send_label": send_label,
+            "send_description": send_confirm,
+            "send_confirm": send_confirm,
+            "match_description": (
+                f"Destructive: throw away this computer’s {local}; take Git {git} "
+                f"({git_ver}). No combine."
+            ),
+            "overwrite_description": (
+                f"Destructive: replace Git with this computer’s {local} ({local_ver}). "
+                f"No combine."
+            ),
+            "local_branch": local,
+            "git_branch": git,
+        }
+
+    # --------------------------------------------------------
     # Method: plainStatusLines
     # Purpose: Plain-English lines: this computer vs Git (remote).
     #          Changelog / tags are NOT included here.

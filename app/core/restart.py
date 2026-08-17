@@ -7,6 +7,8 @@ from typing import Optional
 
 import flet as ft
 
+from app.core.instance_lock import releaseAppLock
+
 
 # ------------------------------------------------------------
 # Function: projectRoot
@@ -28,6 +30,15 @@ def restartApp(page: Optional[ft.Page] = None) -> bool:
         script = root / "run.bat"
         if not script.is_file():
             return False
+    else:
+        script = root / "run.sh"
+        if not script.is_file():
+            return False
+
+    # Drop single-instance lock before spawn so the new process can acquire it.
+    releaseAppLock()
+
+    if os.name == "nt":
         # New console so the restarted app survives after this process exits.
         subprocess.Popen(
             ["cmd.exe", "/c", str(script)],
@@ -36,9 +47,6 @@ def restartApp(page: Optional[ft.Page] = None) -> bool:
             close_fds=True,
         )
     else:
-        script = root / "run.sh"
-        if not script.is_file():
-            return False
         subprocess.Popen(
             ["bash", str(script)],
             cwd=str(root),

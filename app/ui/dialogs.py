@@ -56,7 +56,7 @@ class Dialogs:
             page.update()
 
         content_controls: list[ft.Control] = [
-            ft.Text(outcome.message, size=14),
+            ft.Text(outcome.message, size=14, selectable=True),
         ]
         if outcome.details:
             content_controls.append(
@@ -75,7 +75,8 @@ class Dialogs:
                 content_controls,
                 tight=True,
                 scroll=ft.ScrollMode.AUTO,
-                width=420,
+                width=480,
+                height=320,
             ),
             actions=buttons,
             actions_alignment=ft.MainAxisAlignment.END,

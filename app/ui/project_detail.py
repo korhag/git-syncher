@@ -40,6 +40,7 @@ class ProjectDetailView:
         self.on_back = on_back
         self.dashboard = dashboard
         self.status: Optional[ProjectStatus] = None
+        self._merge_explain: dict[str, str] = {}
         self.body = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=12)
         self.header_status = ft.Column(spacing=2, tight=True)
 
@@ -343,35 +344,49 @@ class ProjectDetailView:
                 else ""
             ) or current
 
+        status = self.status
+        if status is None:
+            status = ProjectStatus(
+                project_id=self.project.id if self.project else "",
+                is_repo=True,
+                path_exists=True,
+                branch=current,
+                remote_default_branch=compared,
+                diverges_from_default=bool(
+                    current and compared and current != compared
+                ),
+            )
+        elif not status.branch and current:
+            status.branch = current
+
+        explain = status.mergeExplain()
+        self._merge_explain = explain
+
         outcome = ActionOutcome(
             title="Merge",
-            message=(
-                f"This computer is on {current or '…'}. "
-                f"Git compared branch is {compared or '…'}. "
-                "Choose a real merge direction (keeps both histories when possible)."
-            ),
+            message=explain["body"],
             choices=[
                 ActionChoice(
                     ActionId.MERGE_BRING_REMOTE,
-                    "Bring Git into this computer",
-                    description=f"Merge origin/{compared} into {current}",
+                    explain["bring_label"],
+                    description=explain["bring_description"],
                 ),
                 ActionChoice(
                     ActionId.MERGE_SEND_TO_REMOTE,
-                    "Send this computer into Git",
-                    description=f"Merge {current} into {compared} and push",
+                    explain["send_label"],
+                    description=explain["send_description"],
                 ),
                 ActionChoice(
                     ActionId.MATCH_REMOTE,
                     "Make this computer match Git",
-                    description="Destructive: reset this folder to Git (no merge).",
+                    description=explain["match_description"],
                     destructive=True,
                     requires_confirm=True,
                 ),
                 ActionChoice(
                     ActionId.OVERWRITE_REMOTE,
                     "Overwrite remote",
-                    description="Destructive: force-push this computer to Git.",
+                    description=explain["overwrite_description"],
                     destructive=True,
                     requires_confirm=True,
                 ),
@@ -644,11 +659,16 @@ class ProjectDetailView:
                 compared = self.status.comparedGitBranch()
             if not compared:
                 compared = self.git.detectRemoteDefaultBranch(project.path)
-            current = self.git.detectBranch(project.path) or "…"
+            explain = getattr(self, "_merge_explain", None) or (
+                self.status.mergeExplain() if self.status else {}
+            )
             Dialogs.showConfirm(
                 self.page,
-                title="Bring Git into this computer?",
-                message=f"Merge origin/{compared} into {current} on this computer.",
+                title=explain.get("bring_label", "Merge Git → this computer?"),
+                message=explain.get(
+                    "bring_confirm",
+                    f"Merge Git {compared} into this computer.",
+                ),
                 confirm_label="Merge",
                 on_confirm=lambda: self._runMergeBring(compared),
             )
@@ -661,13 +681,15 @@ class ProjectDetailView:
                 compared = self.status.comparedGitBranch()
             if not compared:
                 compared = self.git.detectRemoteDefaultBranch(project.path)
-            current = self.git.detectBranch(project.path) or "…"
+            explain = getattr(self, "_merge_explain", None) or (
+                self.status.mergeExplain() if self.status else {}
+            )
             Dialogs.showConfirm(
                 self.page,
-                title="Send this computer into Git?",
-                message=(
-                    f"Merge {current} into {compared}, push to Git, "
-                    f"then return to {current} if possible."
+                title=explain.get("send_label", "Merge this computer → Git?"),
+                message=explain.get(
+                    "send_confirm",
+                    f"Merge this computer into Git {compared}, then push.",
                 ),
                 confirm_label="Merge and push",
                 on_confirm=lambda: self._runMergeSend(compared),

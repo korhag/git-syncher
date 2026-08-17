@@ -5,6 +5,20 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.4] - 2026-08-17
+
+### Added
+
+- Only one Git Syncher window at a time — a second launch shows “Already running” and exits
+- Restart releases the instance lock before starting a new process so the new window can open
+
+## [1.7.3] - 2026-08-17
+
+### Changed
+
+- Merge dialogs spell out **Now** (this computer vs Git, branch + version), what merges into what, and the **After** result (which branch you stay on, what Git gets)
+- Confirms repeat the same short After / Git online lines so the direction is clear before you run it
+
 ## [1.7.2] - 2026-08-17
 
 ### Added

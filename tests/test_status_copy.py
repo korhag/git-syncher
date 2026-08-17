@@ -116,6 +116,29 @@ class TestPlainStatusLines:
         ]
 
     # --------------------------------------------------------
+    # Method: testMergeExplain
+    # --------------------------------------------------------
+    def testMergeExplain(self) -> None:
+        status = _status(
+            branch="master",
+            remote_default_branch="main",
+            diverges_from_default=True,
+            changelog_version="1.4.1",
+            git_changelog_version="1.2.1",
+        )
+        explain = status.mergeExplain()
+        assert "v1.4.1" in explain["body"]
+        assert "v1.2.1" in explain["body"]
+        assert "branch master" in explain["body"]
+        assert "branch main" in explain["body"]
+        assert "Neither side auto-wins" in explain["body"]
+        assert "into" in explain["bring_description"]
+        assert "stay on master" in explain["bring_description"]
+        assert "pushes main" in explain["send_description"]
+        assert "stay on master" in explain["bring_label"]
+        assert "then push" in explain["send_label"]
+
+    # --------------------------------------------------------
     # Method: testUpstreamMissing
     # --------------------------------------------------------
     def testUpstreamMissing(self) -> None:

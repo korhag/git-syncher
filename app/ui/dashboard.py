@@ -388,43 +388,49 @@ class DashboardView:
         if not project:
             return
         status = self.statuses.get(project_id)
-        current = (status.branch if status else "") or self.git.detectBranch(project.path)
-        compared = ""
-        if status:
-            compared = status.comparedGitBranch()
-        if not compared:
-            compared = self.git.detectRemoteDefaultBranch(project.path) or current
-
-        message = (
-            f"This computer is on {current or '…'}. "
-            f"Git compared branch is {compared or '…'}. "
-            "Choose a real merge direction (keeps both histories when possible)."
+        if status is None:
+            status = ProjectStatus(project_id=project_id, is_repo=True, path_exists=True)
+            status.branch = self.git.detectBranch(project.path)
+            status.remote_default_branch = self.git.detectRemoteDefaultBranch(project.path)
+            if (
+                status.branch
+                and status.remote_default_branch
+                and status.branch != status.remote_default_branch
+            ):
+                status.diverges_from_default = True
+        current = status.branch or self.git.detectBranch(project.path)
+        compared = status.comparedGitBranch() or (
+            self.git.detectRemoteDefaultBranch(project.path) or current
         )
+        if not status.branch and current:
+            status.branch = current
+        explain = status.mergeExplain()
+
         outcome = ActionOutcome(
             title="Merge",
-            message=message,
+            message=explain["body"],
             choices=[
                 ActionChoice(
                     ActionId.MERGE_BRING_REMOTE,
-                    "Bring Git into this computer",
-                    description=f"Merge origin/{compared} into {current}",
+                    explain["bring_label"],
+                    description=explain["bring_description"],
                 ),
                 ActionChoice(
                     ActionId.MERGE_SEND_TO_REMOTE,
-                    "Send this computer into Git",
-                    description=f"Merge {current} into {compared} and push",
+                    explain["send_label"],
+                    description=explain["send_description"],
                 ),
                 ActionChoice(
                     ActionId.MATCH_REMOTE,
                     "Make this computer match Git",
-                    description="Destructive: reset this folder to Git (no merge).",
+                    description=explain["match_description"],
                     destructive=True,
                     requires_confirm=True,
                 ),
                 ActionChoice(
                     ActionId.OVERWRITE_REMOTE,
                     "Overwrite remote",
-                    description="Destructive: force-push this computer to Git.",
+                    description=explain["overwrite_description"],
                     destructive=True,
                     requires_confirm=True,
                 ),
@@ -433,7 +439,7 @@ class DashboardView:
         )
 
         def on_choice(action_id: ActionId) -> None:
-            self._dispatchMergeChoice(project, compared, action_id)
+            self._dispatchMergeChoice(project, compared, action_id, explain)
 
         Dialogs.showChoice(self.page, outcome, on_choice)
 
@@ -446,17 +452,22 @@ class DashboardView:
         project: ProjectConfig,
         compared: str,
         action_id: ActionId,
+        explain: Optional[dict[str, str]] = None,
     ) -> None:
         if action_id == ActionId.CANCEL:
             return
 
         current = self.git.detectBranch(project.path) or "…"
+        text = explain or {}
 
         if action_id == ActionId.MERGE_BRING_REMOTE:
             Dialogs.showConfirm(
                 self.page,
-                title="Bring Git into this computer?",
-                message=f"Merge origin/{compared} into {current} on this computer.",
+                title=text.get("bring_label", "Merge Git → this computer?"),
+                message=text.get(
+                    "bring_confirm",
+                    f"Merge Git {compared} into this computer’s {current}.",
+                ),
                 confirm_label="Merge",
                 on_confirm=lambda: self._runMergeBring(project, compared),
             )
@@ -465,10 +476,10 @@ class DashboardView:
         if action_id == ActionId.MERGE_SEND_TO_REMOTE:
             Dialogs.showConfirm(
                 self.page,
-                title="Send this computer into Git?",
-                message=(
-                    f"Merge {current} into {compared}, push to Git, "
-                    f"then return to {current} if possible."
+                title=text.get("send_label", "Merge this computer → Git?"),
+                message=text.get(
+                    "send_confirm",
+                    f"Merge {current} into Git {compared}, then push.",
                 ),
                 confirm_label="Merge and push",
                 on_confirm=lambda: self._runMergeSend(project, compared),
@@ -479,9 +490,10 @@ class DashboardView:
             Dialogs.showConfirm(
                 self.page,
                 title="Make this computer match Git?",
-                message=(
+                message=text.get(
+                    "match_description",
                     "This deletes local commits and uncommitted files on this computer. "
-                    "Git online is not changed."
+                    "Git online is not changed.",
                 ),
                 confirm_label="Match Git",
                 on_confirm=lambda: self._runMatchRemote(project),
@@ -492,9 +504,10 @@ class DashboardView:
             Dialogs.showConfirm(
                 self.page,
                 title="Overwrite remote?",
-                message=(
+                message=text.get(
+                    "overwrite_description",
                     "This force-pushes your local branch and can erase commits on the remote. "
-                    "Only continue if you are sure."
+                    "Only continue if you are sure.",
                 ),
                 confirm_label="Overwrite remote",
                 on_confirm=lambda: self._runOverwriteRemote(project),
