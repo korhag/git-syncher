@@ -9,6 +9,7 @@ from app.core.instance_lock import (
     showAlreadyRunningAndExit,
 )
 from app.core.store import VaultStore
+from app.ui.busy import BusyOverlay
 from app.ui.dashboard import DashboardView
 from app.ui.project_detail import ProjectDetailView
 from app.ui.unlock import UnlockView
@@ -29,8 +30,19 @@ class GitSyncherApp:
         self.store = VaultStore()
         self.git = GitService()
         self.dashboard: DashboardView | None = None
+        self.busy = BusyOverlay(page)
+        self.root_content = ft.Container(expand=True)
         self._configurePage()
         page.on_close = self._onWindowClose
+        page.add(
+            ft.Stack(
+                [
+                    self.root_content,
+                    self.busy.control,
+                ],
+                expand=True,
+            )
+        )
         self.showUnlock()
 
     # --------------------------------------------------------
@@ -56,10 +68,10 @@ class GitSyncherApp:
 
     # --------------------------------------------------------
     # Method: clear
-    # Purpose: Remove all page controls before switching views.
+    # Purpose: Remove view content before switching screens.
     # --------------------------------------------------------
     def clear(self) -> None:
-        self.page.controls.clear()
+        self.root_content.content = None
         # Close any open dialogs when switching screens.
         while self.page.pop_dialog() is not None:
             pass
@@ -77,7 +89,7 @@ class GitSyncherApp:
             git_available=self.git.isGitAvailable(),
             git_version=self.git.gitVersion(),
         )
-        self.page.add(view.build())
+        self.root_content.content = view.build()
         self.page.update()
 
     # --------------------------------------------------------
@@ -90,10 +102,11 @@ class GitSyncherApp:
             page=self.page,
             store=self.store,
             git=self.git,
+            busy=self.busy,
             on_open_project=self.showProjectDetail,
             on_lock=self.lockVault,
         )
-        self.page.add(self.dashboard.build())
+        self.root_content.content = self.dashboard.build()
         self.page.update()
         # Auto-refresh once after unlock so cards are not empty.
         if self.store.projects:
@@ -112,12 +125,15 @@ class GitSyncherApp:
             page=self.page,
             store=self.store,
             git=self.git,
+            busy=self.busy,
             project_id=project_id,
             on_back=self.showDashboard,
             dashboard=self.dashboard,
         )
-        self.page.add(detail.build())
+        self.root_content.content = detail.build()
         self.page.update()
+        # Status fetch runs after the layout paints (see ProjectDetailView).
+        detail.reloadAsync(silent=True)
 
     # --------------------------------------------------------
     # Method: lockVault

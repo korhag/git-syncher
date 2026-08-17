@@ -10,6 +10,7 @@ from app.core.git_service import GitService
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.store import VaultStore
 from app.models.project import FileChangeKind, ProjectConfig, ProjectStatus, SuggestedAction
+from app.ui.busy import BusyOverlay
 from app.ui.dashboard import DashboardView, _ACTION_META
 from app.ui.dialogs import Dialogs
 
@@ -29,6 +30,7 @@ class ProjectDetailView:
         page: ft.Page,
         store: VaultStore,
         git: GitService,
+        busy: BusyOverlay,
         project_id: str,
         on_back: Callable[[], None],
         dashboard: DashboardView,
@@ -36,6 +38,7 @@ class ProjectDetailView:
         self.page = page
         self.store = store
         self.git = git
+        self.busy = busy
         self.project_id = project_id
         self.on_back = on_back
         self.dashboard = dashboard
@@ -90,7 +93,7 @@ class ProjectDetailView:
 
         actions = ft.Row(
             [
-                ft.FilledButton("Refresh", icon=ft.Icons.REFRESH, on_click=lambda _e: self.reload()),
+                ft.FilledButton("Refresh", icon=ft.Icons.REFRESH, on_click=lambda _e: self.reloadAsync()),
                 ft.OutlinedButton("Commit", icon=ft.Icons.COMMIT, on_click=lambda _e: self.doCommit()),
                 ft.OutlinedButton("Pull", icon=ft.Icons.DOWNLOAD, on_click=lambda _e: self.doPull()),
                 ft.OutlinedButton("Push", icon=ft.Icons.UPLOAD, on_click=lambda _e: self.doPush()),
@@ -99,7 +102,13 @@ class ProjectDetailView:
             spacing=8,
         )
 
-        self.reload(silent=True)
+        # Placeholder until async status arrives (main calls reloadAsync).
+        self.header_status.controls = [
+            ft.Text("Loading status…", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+        ]
+        self.body.controls = [
+            ft.Text("Loading…", color=ft.Colors.ON_SURFACE_VARIANT)
+        ]
         return ft.Container(
             expand=True,
             padding=20,
@@ -117,7 +126,7 @@ class ProjectDetailView:
 
     # --------------------------------------------------------
     # Method: reload
-    # Purpose: Refresh this project's Git status and file list.
+    # Purpose: Refresh this project's Git status and file list (sync).
     # --------------------------------------------------------
     def reload(self, silent: bool = False) -> None:
         project = self.project
@@ -131,6 +140,40 @@ class ProjectDetailView:
         if not silent:
             Dialogs.showSnack(self.page, "Status updated")
         self.page.update()
+
+    # --------------------------------------------------------
+    # Method: reloadAsync
+    # Purpose: Same as reload, but off the UI thread with a spinner.
+    # --------------------------------------------------------
+    def reloadAsync(self, silent: bool = False) -> None:
+        project = self.project
+        if project is None:
+            Dialogs.showSnack(self.page, "Project no longer exists.", error=True)
+            self.on_back()
+            return
+
+        def work() -> ProjectStatus:
+            return self.git.getStatus(project, fetch=True)
+
+        def done(
+            status: Optional[ProjectStatus],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            if self.project is None:
+                self.on_back()
+                return
+            assert status is not None
+            self.status = status
+            self.dashboard.statuses[project.id] = status
+            self._renderBody()
+            if not silent:
+                Dialogs.showSnack(self.page, "Status updated")
+            self.page.update()
+
+        self.busy.runOrSnack("Refreshing…", work, on_done=done)
 
     # --------------------------------------------------------
     # Method: _renderBody
@@ -484,23 +527,49 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        outcome = self.git.commit(project, message)
-        self._handleOutcome(outcome, retry=lambda: self._commitWithMessage(message))
-        if outcome.success:
-            self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.commit(project, message)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=lambda: self._commitWithMessage(message))
+            if outcome.success:
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Committing…", work, on_done=done)
 
     def doPull(self) -> None:
         project = self.project
         if not project:
             return
-        outcome = self.git.pull(project)
-        self._handleOutcome(outcome, retry=self.doPull)
-        if outcome.success:
-            try:
-                self.store.save()
-            except Exception:
-                pass
-            self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.pull(project)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=self.doPull)
+            if outcome.success:
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Pulling…", work, on_done=done)
 
     # --------------------------------------------------------
     # Method: _pullCurrentBranch
@@ -510,11 +579,24 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        current = self.git.detectBranch(project.path)
-        outcome = self.git.pull(project, branch=current or None)
-        self._handleOutcome(outcome, retry=self._pullCurrentBranch)
-        if outcome.success:
-            self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            current = self.git.detectBranch(project.path)
+            return self.git.pull(project, branch=current or None)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=self._pullCurrentBranch)
+            if outcome.success:
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Pulling…", work, on_done=done)
 
     def doPush(self, force: bool = False, set_upstream: bool = False) -> None:
         project = self.project
@@ -522,38 +604,60 @@ class ProjectDetailView:
             return
 
         def run_push(create_tag_version: Optional[str] = None) -> None:
-            outcome = self.git.push(project, force=force, set_upstream=set_upstream)
-            if not outcome.success:
-                self._handleOutcome(
-                    outcome,
-                    retry=lambda: self.doPush(force=force, set_upstream=set_upstream),
-                )
-                return
-
-            if create_tag_version:
+            def work() -> tuple[ActionOutcome, Optional[ActionOutcome], Optional[ActionOutcome]]:
+                outcome = self.git.push(project, force=force, set_upstream=set_upstream)
+                if not outcome.success or not create_tag_version:
+                    return outcome, None, None
                 tag_outcome = self.git.createTag(project.path, create_tag_version)
                 if not tag_outcome.success:
-                    Dialogs.showSnack(self.page, "Push succeeded, but tagging failed.", error=True)
-                    self._handleOutcome(tag_outcome)
-                    self.reload(silent=True)
-                    return
+                    return outcome, tag_outcome, None
                 push_tag = self.git.pushTag(project, create_tag_version)
-                if push_tag.success:
-                    Dialogs.showSnack(
-                        self.page,
-                        f"Pushed and tagged {create_tag_version}",
-                    )
-                else:
-                    Dialogs.showSnack(
-                        self.page,
-                        f"Pushed; tag created locally but not on Git yet ({push_tag.message})",
-                        error=True,
-                    )
-                    self._handleOutcome(push_tag)
-            else:
-                self._handleOutcome(outcome)
+                return outcome, tag_outcome, push_tag
 
-            self.reload(silent=True)
+            def done(
+                result: Optional[
+                    tuple[ActionOutcome, Optional[ActionOutcome], Optional[ActionOutcome]]
+                ],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    Dialogs.showSnack(self.page, str(error), error=True)
+                    return
+                assert result is not None
+                outcome, tag_outcome, push_tag = result
+                if not outcome.success:
+                    self._handleOutcome(
+                        outcome,
+                        retry=lambda: self.doPush(force=force, set_upstream=set_upstream),
+                    )
+                    return
+
+                if create_tag_version:
+                    if tag_outcome is not None and not tag_outcome.success:
+                        Dialogs.showSnack(
+                            self.page, "Push succeeded, but tagging failed.", error=True
+                        )
+                        self._handleOutcome(tag_outcome)
+                        self.reloadAsync(silent=True)
+                        return
+                    if push_tag is not None and push_tag.success:
+                        Dialogs.showSnack(
+                            self.page,
+                            f"Pushed and tagged {create_tag_version}",
+                        )
+                    elif push_tag is not None:
+                        Dialogs.showSnack(
+                            self.page,
+                            f"Pushed; tag created locally but not on Git yet ({push_tag.message})",
+                            error=True,
+                        )
+                        self._handleOutcome(push_tag)
+                else:
+                    self._handleOutcome(outcome)
+
+                self.reloadAsync(silent=True)
+
+            self.busy.runOrSnack("Pushing…", work, on_done=done)
 
         if force:
             current = self.git.detectBranch(project.path) or project.default_branch or "…"
@@ -598,7 +702,6 @@ class ProjectDetailView:
             return
 
         run_push(None)
-
     # --------------------------------------------------------
     # Method: _handleOutcome
     # Purpose: Show success snack or choice dialog for failures.
@@ -639,7 +742,7 @@ class ProjectDetailView:
             self._editSettings()
             return
         if action_id == ActionId.VIEW_DIFFS:
-            self.reload(silent=True)
+            self.reloadAsync(silent=True)
             Dialogs.showSnack(self.page, "Review changed files below, then choose an action.")
             return
         if action_id == ActionId.PULL_FIRST:
@@ -701,10 +804,24 @@ class ProjectDetailView:
         if not project:
             return
         if action_id == ActionId.STASH_THEN_PULL:
-            outcome = self.git.stashThenPull(project)
-            self._handleOutcome(outcome, retry=lambda: self._dispatchAction(action_id))
-            if outcome.success:
-                self.reload(silent=True)
+            def stash_work() -> ActionOutcome:
+                return self.git.stashThenPull(project)
+
+            def stash_done(
+                outcome: Optional[ActionOutcome],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    Dialogs.showSnack(self.page, str(error), error=True)
+                    return
+                assert outcome is not None
+                self._handleOutcome(
+                    outcome, retry=lambda: self._dispatchAction(action_id)
+                )
+                if outcome.success:
+                    self.reloadAsync(silent=True)
+
+            self.busy.runOrSnack("Stashing and pulling…", stash_work, on_done=stash_done)
             return
         if action_id == ActionId.DISCARD_THEN_PULL:
             Dialogs.showConfirm(
@@ -729,20 +846,45 @@ class ProjectDetailView:
             )
             return
         if action_id == ActionId.INIT_REPO:
-            outcome = self.git.initRepo(project.path)
-            self._handleOutcome(outcome)
-            if outcome.success:
-                self.reload(silent=True)
+            def init_work() -> ActionOutcome:
+                return self.git.initRepo(project.path)
+
+            def init_done(
+                outcome: Optional[ActionOutcome],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    Dialogs.showSnack(self.page, str(error), error=True)
+                    return
+                assert outcome is not None
+                self._handleOutcome(outcome)
+                if outcome.success:
+                    self.reloadAsync(silent=True)
+
+            self.busy.runOrSnack("Initializing Git…", init_work, on_done=init_done)
             return
 
     def _runDiscardThenPull(self) -> None:
         project = self.project
         if not project:
             return
-        outcome = self.git.discardThenPull(project)
-        self._handleOutcome(outcome)
-        if outcome.success:
-            self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.discardThenPull(project)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome)
+            if outcome.success:
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Discarding and pulling…", work, on_done=done)
 
     # --------------------------------------------------------
     # Method: _runMatchRemote
@@ -752,14 +894,27 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        outcome = self.git.resetToRemote(project)
-        self._handleOutcome(outcome, retry=self._runMatchRemote)
-        if outcome.success:
-            try:
-                self.store.save()
-            except Exception:
-                pass
-            self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.resetToRemote(project)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=self._runMatchRemote)
+            if outcome.success:
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Matching Git…", work, on_done=done)
 
     # --------------------------------------------------------
     # Method: _runMergeBring
@@ -769,9 +924,22 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        outcome = self.git.mergeBringRemote(project, compared)
-        self._handleOutcome(outcome, retry=lambda: self._runMergeBring(compared))
-        self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.mergeBringRemote(project, compared)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=lambda: self._runMergeBring(compared))
+            self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Merging…", work, on_done=done)
 
     # --------------------------------------------------------
     # Method: _runMergeSend
@@ -781,14 +949,27 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        outcome = self.git.mergeSendToRemote(project, compared)
-        self._handleOutcome(outcome, retry=lambda: self._runMergeSend(compared))
-        if outcome.success:
-            try:
-                self.store.save()
-            except Exception:
-                pass
-        self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.mergeSendToRemote(project, compared)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=lambda: self._runMergeSend(compared))
+            if outcome.success:
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+            self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Merging and pushing…", work, on_done=done)
 
     # --------------------------------------------------------
     # Per-file helpers
@@ -797,8 +978,17 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        diff_text = self.git.getDiff(project.path, file_path)
-        Dialogs.showDiff(self.page, file_path, diff_text)
+
+        def work() -> str:
+            return self.git.getDiff(project.path, file_path)
+
+        def done(diff_text: Optional[str], error: Optional[BaseException]) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            Dialogs.showDiff(self.page, file_path, diff_text or "")
+
+        self.busy.runOrSnack("Loading diff…", work, on_done=done)
 
     def _discardFile(self, file_path: str) -> None:
         project = self.project
@@ -806,10 +996,22 @@ class ProjectDetailView:
             return
 
         def run() -> None:
-            outcome = self.git.discardFile(project.path, file_path)
-            self._handleOutcome(outcome)
-            if outcome.success:
-                self.reload(silent=True)
+            def work() -> ActionOutcome:
+                return self.git.discardFile(project.path, file_path)
+
+            def done(
+                outcome: Optional[ActionOutcome],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    Dialogs.showSnack(self.page, str(error), error=True)
+                    return
+                assert outcome is not None
+                self._handleOutcome(outcome)
+                if outcome.success:
+                    self.reloadAsync(silent=True)
+
+            self.busy.runOrSnack("Discarding…", work, on_done=done)
 
         Dialogs.showConfirm(
             self.page,
@@ -825,10 +1027,22 @@ class ProjectDetailView:
             return
 
         def run() -> None:
-            outcome = self.git.discardAll(project.path)
-            self._handleOutcome(outcome)
-            if outcome.success:
-                self.reload(silent=True)
+            def work() -> ActionOutcome:
+                return self.git.discardAll(project.path)
+
+            def done(
+                outcome: Optional[ActionOutcome],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    Dialogs.showSnack(self.page, str(error), error=True)
+                    return
+                assert outcome is not None
+                self._handleOutcome(outcome)
+                if outcome.success:
+                    self.reloadAsync(silent=True)
+
+            self.busy.runOrSnack("Discarding…", work, on_done=done)
 
         Dialogs.showConfirm(
             self.page,
@@ -842,20 +1056,45 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
-        outcome = self.git.resolveFileKeepLocal(project.path, file_path)
-        self._handleOutcome(outcome)
-        if outcome.success:
-            self.reload(silent=True)
+
+        def work() -> ActionOutcome:
+            return self.git.resolveFileKeepLocal(project.path, file_path)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome)
+            if outcome.success:
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Resolving…", work, on_done=done)
 
     def _takeRemote(self, file_path: str) -> None:
         project = self.project
         if not project:
             return
-        outcome = self.git.resolveFileTakeRemote(project.path, file_path)
-        self._handleOutcome(outcome)
-        if outcome.success:
-            self.reload(silent=True)
 
+        def work() -> ActionOutcome:
+            return self.git.resolveFileTakeRemote(project.path, file_path)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome)
+            if outcome.success:
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Resolving…", work, on_done=done)
     # --------------------------------------------------------
     # Settings / remove
     # --------------------------------------------------------

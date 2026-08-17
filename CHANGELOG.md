@@ -5,6 +5,23 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-08-17
+
+### Added
+
+- Dashboard cards have **Edit** and **Remove** so you can fix or drop a project without opening it
+- Loading overlay with spinner while Refresh, Save, Pull, Push, and other Git work runs
+- Vault uniqueness: the same folder + default branch cannot be added twice
+
+### Changed
+
+- Opening a project paints the detail screen first, then loads Git status in the background
+- Unlock collapses existing duplicate folder+branch entries automatically (keeps the first)
+
+### Fixed
+
+- Extra clicks on Save could add the same project multiple times before Git finished
+
 ## [1.8.0] - 2026-08-17
 
 ### Changed

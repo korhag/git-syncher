@@ -253,7 +253,25 @@ class UnlockView:
         error_text.value = ""
         restore_button.visible = False
         start_over_button.visible = False
+        self._finishUnlock()
+
+    # --------------------------------------------------------
+    # Method: _finishUnlock
+    # Purpose: Collapse duplicate vault entries, then open dashboard.
+    # --------------------------------------------------------
+    def _finishUnlock(self) -> None:
+        removed = 0
+        try:
+            removed = self.store.collapseDuplicateProjects()
+        except Exception:
+            removed = 0
         self.on_unlocked()
+        if removed:
+            noun = "entry" if removed == 1 else "entries"
+            Dialogs.showSnack(
+                self.page,
+                f"Removed {removed} duplicate project {noun}",
+            )
 
     # --------------------------------------------------------
     # Method: _confirmStartOver
@@ -345,4 +363,4 @@ class UnlockView:
         error_text.value = ""
         restore_button.visible = False
         start_over_button.visible = False
-        self.on_unlocked()
+        self._finishUnlock()

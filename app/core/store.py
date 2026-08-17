@@ -228,12 +228,84 @@ class VaultStore:
         self._fingerprint = ""
 
     # --------------------------------------------------------
+    # Method: normalizePath
+    # Purpose: Canonical folder path for duplicate checks.
+    # --------------------------------------------------------
+    @staticmethod
+    def normalizePath(path: str) -> str:
+        raw = (path or "").strip()
+        if not raw:
+            return ""
+        candidate = Path(raw).expanduser()
+        try:
+            return str(candidate.resolve())
+        except OSError:
+            return os.path.normpath(str(candidate))
+
+    # --------------------------------------------------------
+    # Method: findDuplicate
+    # Purpose: Existing project with same folder + default branch.
+    # Input: path, branch; exclude_id skips that project (edit).
+    # Output: ProjectConfig or None.
+    # --------------------------------------------------------
+    def findDuplicate(
+        self,
+        path: str,
+        branch: str,
+        exclude_id: Optional[str] = None,
+    ) -> Optional[ProjectConfig]:
+        key_path = self.normalizePath(path)
+        key_branch = (branch or "").strip()
+        if not key_path:
+            return None
+        for project in self.projects:
+            if exclude_id and project.id == exclude_id:
+                continue
+            if (
+                self.normalizePath(project.path) == key_path
+                and (project.default_branch or "").strip() == key_branch
+            ):
+                return project
+        return None
+
+    # --------------------------------------------------------
+    # Method: collapseDuplicateProjects
+    # Purpose: Keep first of each path+branch pair; drop extras.
+    # Output: int - number of removed entries (0 if unchanged).
+    # --------------------------------------------------------
+    def collapseDuplicateProjects(self) -> int:
+        seen: set[tuple[str, str]] = set()
+        kept: list[ProjectConfig] = []
+        removed = 0
+        for project in self.projects:
+            key = (
+                self.normalizePath(project.path),
+                (project.default_branch or "").strip(),
+            )
+            if key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+            kept.append(project)
+        if removed:
+            self.projects = kept
+            self.save()
+        return removed
+
+    # --------------------------------------------------------
     # Method: addProject
     # Purpose: Append a project and persist the vault.
     # --------------------------------------------------------
     def addProject(self, project: ProjectConfig) -> ProjectConfig:
         if not project.id:
             project.id = str(uuid.uuid4())
+        dup = self.findDuplicate(project.path, project.default_branch)
+        if dup is not None:
+            branch = (project.default_branch or "").strip() or "…"
+            raise ValueError(
+                f"This folder is already tracked for branch {branch}."
+            )
+        project.path = self.normalizePath(project.path) or project.path
         self.projects.append(project)
         self.save()
         return project
@@ -243,6 +315,17 @@ class VaultStore:
     # Purpose: Replace a project by id and persist.
     # --------------------------------------------------------
     def updateProject(self, project: ProjectConfig) -> None:
+        dup = self.findDuplicate(
+            project.path,
+            project.default_branch,
+            exclude_id=project.id,
+        )
+        if dup is not None:
+            branch = (project.default_branch or "").strip() or "…"
+            raise ValueError(
+                f"This folder is already tracked for branch {branch}."
+            )
+        project.path = self.normalizePath(project.path) or project.path
         for index, existing in enumerate(self.projects):
             if existing.id == project.id:
                 self.projects[index] = project

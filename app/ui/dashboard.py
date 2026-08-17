@@ -11,6 +11,7 @@ from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.restart import restartApp
 from app.core.store import VaultStore
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
+from app.ui.busy import BusyOverlay
 from app.ui.dialogs import Dialogs
 
 
@@ -42,17 +43,18 @@ class DashboardView:
         page: ft.Page,
         store: VaultStore,
         git: GitService,
+        busy: BusyOverlay,
         on_open_project: Callable[[str], None],
         on_lock: Callable[[], None],
     ) -> None:
         self.page = page
         self.store = store
         self.git = git
+        self.busy = busy
         self.on_open_project = on_open_project
         self.on_lock = on_lock
         self.statuses: dict[str, ProjectStatus] = {}
         self.list_column = ft.Column(spacing=6, expand=True, scroll=ft.ScrollMode.AUTO)
-        self.refreshing = False
         self.status_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.refresh_button = ft.FilledButton(
             "Refresh",
@@ -143,18 +145,25 @@ class DashboardView:
     # Purpose: Re-query Git status for every saved project.
     # --------------------------------------------------------
     def refreshAll(self) -> None:
-        if self.refreshing:
-            return
         if not self.git.isGitAvailable():
             Dialogs.showSnack(self.page, "Git is not installed or not on PATH.", error=True)
             return
-        self.refreshing = True
-        self.refresh_button.disabled = True
-        self.status_text.value = "Refreshing…"
-        self.page.update()
 
-        try:
-            self.statuses = self.git.refreshAll(self.store.projects, fetch=True)
+        def work() -> dict[str, ProjectStatus]:
+            return self.git.refreshAll(self.store.projects, fetch=True)
+
+        def done(
+            result: Optional[dict[str, ProjectStatus]],
+            error: Optional[BaseException],
+        ) -> None:
+            self.refresh_button.disabled = False
+            if error is not None:
+                self.status_text.value = "Refresh failed"
+                Dialogs.showSnack(self.page, str(error), error=True)
+                self._rebuildCards()
+                self.page.update()
+                return
+            self.statuses = result or {}
             # Persist vault (e.g. remote URL detections); do not rewrite default_branch.
             try:
                 self.store.save()
@@ -162,13 +171,14 @@ class DashboardView:
                 pass
             count = len(self.store.projects)
             self.status_text.value = f"Updated {count} project{'s' if count != 1 else ''}"
-        except Exception as exc:  # noqa: BLE001
-            self.status_text.value = "Refresh failed"
-            Dialogs.showSnack(self.page, str(exc), error=True)
-        finally:
-            self.refreshing = False
-            self.refresh_button.disabled = False
             self._rebuildCards()
+            self.page.update()
+
+        self.refresh_button.disabled = True
+        self.status_text.value = "Refreshing…"
+        self.page.update()
+        if not self.busy.runOrSnack("Refreshing…", work, on_done=done):
+            self.refresh_button.disabled = False
             self.page.update()
 
     # --------------------------------------------------------
@@ -277,6 +287,12 @@ class DashboardView:
                     error=True,
                 )
 
+        def edit_project(_e: ft.ControlEvent, proj: ProjectConfig = project) -> None:
+            self.openAddProjectDialog(existing=proj)
+
+        def remove_project(_e: ft.ControlEvent, proj: ProjectConfig = project) -> None:
+            self._confirmRemoveProject(proj)
+
         title_row_controls: list[ft.Control] = [
             ft.Text(project.name, size=15, weight=ft.FontWeight.W_600),
         ]
@@ -306,6 +322,21 @@ class DashboardView:
                     style=ft.ButtonStyle(padding=4),
                     on_click=open_remote,
                     disabled=not bool(remote),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.EDIT_OUTLINED,
+                    tooltip="Edit project",
+                    icon_size=18,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=edit_project,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    tooltip="Remove from Syncher",
+                    icon_size=18,
+                    icon_color=ft.Colors.RED_400,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=remove_project,
                 ),
                 ft.Container(
                     content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),
@@ -377,6 +408,29 @@ class DashboardView:
                     tight=True,
                 ),
             )
+        )
+
+    # --------------------------------------------------------
+    # Method: _confirmRemoveProject
+    # Purpose: Confirm, then drop a Syncher entry (not disk files).
+    # --------------------------------------------------------
+    def _confirmRemoveProject(self, project: ProjectConfig) -> None:
+        def confirm() -> None:
+            self.store.removeProject(project.id)
+            self.statuses.pop(project.id, None)
+            Dialogs.showSnack(self.page, "Project removed from Syncher")
+            self._rebuildCards()
+            self.page.update()
+
+        Dialogs.showYesNo(
+            self.page,
+            title="Remove project?",
+            message=(
+                f"Remove “{project.name}” from Git Syncher?\n"
+                "This does not delete files on disk — only the Syncher entry and stored PAT."
+            ),
+            confirm_label="Remove",
+            on_confirm=confirm,
         )
 
     # --------------------------------------------------------
@@ -515,63 +569,111 @@ class DashboardView:
             return
 
     def _runMergeBring(self, project: ProjectConfig, compared: str) -> None:
-        outcome = self.git.mergeBringRemote(project, compared)
-        if outcome.success:
-            Dialogs.showSnack(
+        def work() -> ActionOutcome:
+            return self.git.mergeBringRemote(project, compared)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(
+                    self.page,
+                    outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                )
+                self.refreshAll()
+                return
+            Dialogs.showChoice(
                 self.page,
-                outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                outcome,
+                lambda aid: self._onMergeFailureChoice(project, aid),
             )
             self.refreshAll()
-            return
-        Dialogs.showChoice(
-            self.page,
-            outcome,
-            lambda aid: self._onMergeFailureChoice(project, aid),
-        )
-        self.refreshAll()
+
+        self.busy.runOrSnack("Merging…", work, on_done=done)
 
     def _runMergeSend(self, project: ProjectConfig, compared: str) -> None:
-        outcome = self.git.mergeSendToRemote(project, compared)
-        if outcome.success:
-            Dialogs.showSnack(
+        def work() -> ActionOutcome:
+            return self.git.mergeSendToRemote(project, compared)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(
+                    self.page,
+                    outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                )
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.refreshAll()
+                return
+            Dialogs.showChoice(
                 self.page,
-                outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                outcome,
+                lambda aid: self._onMergeFailureChoice(project, aid),
             )
-            try:
-                self.store.save()
-            except Exception:
-                pass
             self.refreshAll()
-            return
-        Dialogs.showChoice(
-            self.page,
-            outcome,
-            lambda aid: self._onMergeFailureChoice(project, aid),
-        )
-        self.refreshAll()
+
+        self.busy.runOrSnack("Merging and pushing…", work, on_done=done)
 
     def _runMatchRemote(self, project: ProjectConfig) -> None:
-        outcome = self.git.resetToRemote(project)
-        if outcome.success:
-            Dialogs.showSnack(self.page, outcome.title)
-            try:
-                self.store.save()
-            except Exception:
-                pass
-            self.refreshAll()
-            return
-        Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+        def work() -> ActionOutcome:
+            return self.git.resetToRemote(project)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(self.page, outcome.title)
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.refreshAll()
+                return
+            Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+
+        self.busy.runOrSnack("Matching Git…", work, on_done=done)
 
     def _runOverwriteRemote(self, project: ProjectConfig) -> None:
-        outcome = self.git.push(project, force=True)
-        if outcome.success:
-            Dialogs.showSnack(
-                self.page,
-                outcome.title + (f" — {outcome.message}" if outcome.message else ""),
-            )
-            self.refreshAll()
-            return
-        Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+        def work() -> ActionOutcome:
+            return self.git.push(project, force=True)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(
+                    self.page,
+                    outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                )
+                self.refreshAll()
+                return
+            Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+
+        self.busy.runOrSnack("Overwriting remote…", work, on_done=done)
 
     def _onMergeFailureChoice(self, project: ProjectConfig, action_id: ActionId) -> None:
         if action_id == ActionId.VIEW_DIFFS:
@@ -700,9 +802,6 @@ class DashboardView:
                 self.page.update()
                 return
 
-            error_text.value = "Loading branches from Git…"
-            self.page.update()
-
             temp = ProjectConfig(
                 id="temp-branch-list",
                 name="temp",
@@ -712,33 +811,55 @@ class DashboardView:
                 email=(email_field.value or "").strip(),
                 pat=(pat_field.value or "").strip(),
             )
-            branches, remote_default, err = self.git.listRemoteBranches(temp)
-            if err:
-                error_text.value = err
-                self.page.update()
-                return
-            if not branches:
-                error_text.value = "No branches found on that remote."
-                self.page.update()
-                return
 
-            branch_field.options = [
-                ft.DropdownOption(key=name, text=name) for name in branches
-            ]
-            current = (branch_field.value or "").strip()
-            if current and current in branches:
-                branch_field.value = current
-            elif remote_default and remote_default in branches:
-                branch_field.value = remote_default
-            else:
-                branch_field.value = branches[0]
-            error_text.value = ""
+            def work() -> tuple[list[str], str, str]:
+                return self.git.listRemoteBranches(temp)
+
+            def done(
+                result: Optional[tuple[list[str], str, str]],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    error_text.value = str(error)
+                    self.page.update()
+                    return
+                assert result is not None
+                branches, remote_default, err = result
+                if err:
+                    error_text.value = err
+                    self.page.update()
+                    return
+                if not branches:
+                    error_text.value = "No branches found on that remote."
+                    self.page.update()
+                    return
+
+                branch_field.options = [
+                    ft.DropdownOption(key=name, text=name) for name in branches
+                ]
+                current = (branch_field.value or "").strip()
+                if current and current in branches:
+                    branch_field.value = current
+                elif remote_default and remote_default in branches:
+                    branch_field.value = remote_default
+                else:
+                    branch_field.value = branches[0]
+                error_text.value = ""
+                self.page.update()
+
+            error_text.value = "Loading branches from Git…"
             self.page.update()
+            self.busy.runOrSnack("Loading branches…", work, on_done=done)
 
         def close() -> None:
             self.page.pop_dialog()
 
+        save_button = ft.FilledButton("Save")
+
         def save(_e: ft.ControlEvent) -> None:
+            if self.busy.busy:
+                Dialogs.showSnack(self.page, "Please wait…")
+                return
             path = (path_field.value or "").strip()
             name = (name_field.value or "").strip()
             if not path:
@@ -755,6 +876,18 @@ class DashboardView:
                 self.page.update()
                 return
 
+            dup = self.store.findDuplicate(
+                path,
+                branch_value,
+                exclude_id=existing.id if existing else None,
+            )
+            if dup is not None:
+                error_text.value = (
+                    f"This folder is already tracked for branch {branch_value}."
+                )
+                self.page.update()
+                return
+
             project = existing or ProjectConfig(
                 id=str(uuid.uuid4()),
                 name=name,
@@ -767,48 +900,56 @@ class DashboardView:
             project.email = (email_field.value or "").strip()
             project.pat = (pat_field.value or "").strip()
             project.default_branch = branch_value
+            should_init = bool(init_checkbox.value)
 
-            try:
+            def work() -> tuple[Optional[ActionOutcome], Optional[str]]:
+                """Return (switch_outcome_or_None, error_message_or_None)."""
                 if not self.git.isRepo(path):
-                    if init_checkbox.value:
+                    if should_init:
                         outcome = self.git.initRepo(path)
                         if not outcome.success:
-                            error_text.value = outcome.message
-                            self.page.update()
-                            return
+                            return None, outcome.message or outcome.title
                     else:
-                        error_text.value = (
+                        return None, (
                             "Folder is not a Git repo. Check 'Initialize Git' "
                             "or pick another folder."
                         )
-                        self.page.update()
-                        return
 
                 if project.remote_url:
                     remote_outcome = self.git.setRemote(path, project.remote_url)
                     if not remote_outcome.success:
-                        error_text.value = remote_outcome.message
-                        self.page.update()
-                        return
+                        return None, remote_outcome.message or remote_outcome.title
 
                 self.git.applyLocalIdentity(path, project.username, project.email)
-
                 switch = self.git.checkoutSavedBranch(project)
-                if not switch.success:
-                    # Still save the picked branch name, but tell the user why
-                    # this computer did not switch yet.
-                    if editing:
-                        self.store.updateProject(project)
-                    else:
-                        self.store.addProject(project)
-                    error_text.value = switch.message or switch.title
-                    self.page.update()
-                    return
-
                 if editing:
                     self.store.updateProject(project)
                 else:
                     self.store.addProject(project)
+                return switch, None
+
+            def done(
+                result: Optional[tuple[Optional[ActionOutcome], Optional[str]]],
+                error: Optional[BaseException],
+            ) -> None:
+                save_button.disabled = False
+                if error is not None:
+                    error_text.value = str(error)
+                    self.page.update()
+                    return
+                assert result is not None
+                switch, err_msg = result
+                if err_msg:
+                    error_text.value = err_msg
+                    self.page.update()
+                    return
+                assert switch is not None
+                if not switch.success:
+                    # Still saved the picked branch; tell the user why checkout failed.
+                    error_text.value = switch.message or switch.title
+                    self.page.update()
+                    self.refreshAll()
+                    return
 
                 close()
                 if switch.message and switch.title.startswith("Switched"):
@@ -816,9 +957,15 @@ class DashboardView:
                 else:
                     Dialogs.showSnack(self.page, "Project saved")
                 self.refreshAll()
-            except Exception as exc:  # noqa: BLE001
-                error_text.value = str(exc)
+
+            save_button.disabled = True
+            error_text.value = ""
+            self.page.update()
+            if not self.busy.runOrSnack("Saving project…", work, on_done=done):
+                save_button.disabled = False
                 self.page.update()
+
+        save_button.on_click = save
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -863,7 +1010,7 @@ class DashboardView:
             ),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda _e: close()),
-                ft.FilledButton("Save", on_click=save),
+                save_button,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
