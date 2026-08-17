@@ -2,7 +2,22 @@
 
 All notable changes to Git Syncher will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.2.0] - 2026-08-17
+
+### Added
+
+- Cursor rule requiring Changelog updates with every meaningful change
+- Open project folder in Explorer / Finder from the dashboard card and project detail
+- Restart button on the dashboard (relaunches via `run.bat` / `run.sh`, then exits)
+
+### Changed
+
+- Dashboard project rows are denser (two-line layout: name/branch/actions, then path/status)
 
 ## [1.1.0] - 2026-08-17
 

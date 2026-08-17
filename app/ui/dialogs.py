@@ -136,6 +136,40 @@ class Dialogs:
         page.show_dialog(dialog)
 
     # --------------------------------------------------------
+    # Method: showYesNo
+    # Purpose: Simple confirm without the destructive checkbox.
+    # --------------------------------------------------------
+    @staticmethod
+    def showYesNo(
+        page: ft.Page,
+        title: str,
+        message: str,
+        confirm_label: str,
+        on_confirm: Callable[[], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+    ) -> None:
+        def handle_cancel(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            if on_cancel:
+                on_cancel()
+
+        def handle_confirm(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            on_confirm()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(title),
+            content=ft.Text(message),
+            actions=[
+                ft.TextButton("Cancel", on_click=handle_cancel),
+                ft.FilledButton(confirm_label, on_click=handle_confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialog)
+
+    # --------------------------------------------------------
     # Method: showCommit
     # Purpose: Commit message dialog with optional prefill.
     # --------------------------------------------------------

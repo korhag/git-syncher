@@ -1,0 +1,58 @@
+---
+description: Keep Changelog.md updated with every meaningful code change (Keep a Changelog)
+alwaysApply: true
+---
+
+# Changelog discipline
+
+Whenever you change application behavior, UI, APIs, scripts, or user-facing docs in this repo, **update [`Changelog.md`](Changelog.md) in the same turn** — before considering the task done. Do not wait for the user to ask.
+
+## Format (Keep a Changelog)
+
+- Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [Semantic Versioning](https://semver.org/).
+- Newest section first.
+- Use these groups under a version: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
+- Omit empty groups.
+- Write for humans: what changed and why it matters — not file lists or commit hashes.
+
+## Unreleased first
+
+1. Put new notes under `## [Unreleased]` while work is in progress.
+2. When the user asks to release / tag / bump version: move `Unreleased` items into a dated `## [X.Y.Z] - YYYY-MM-DD`, clear `Unreleased`, and set `app.__version__` to match.
+3. Do **not** invent a new version number for every small PR unless the user asked for a release.
+
+## What must be logged
+
+- User-visible behavior (GUI, dialogs, status text, install/run scripts)
+- New or changed Git actions / safety confirmations
+- Bug fixes the user would notice
+- Security-related changes (vault, PAT handling)
+
+## What may be skipped
+
+- Typos in comments only
+- Pure refactors with no behavior change
+- Test-only changes that do not alter product behavior
+- Formatting / lint-only edits
+
+## Same-turn checklist
+
+```text
+□ Code change done
+□ Changelog.md updated (Unreleased or current release section)
+□ If releasing: version + date + app.__version__ aligned
+```
+
+## Example entry
+
+```markdown
+## [Unreleased]
+
+### Added
+
+- Open project folder in Explorer from the dashboard card
+
+### Fixed
+
+- Pull uses the current branch instead of a stale stored default
+```

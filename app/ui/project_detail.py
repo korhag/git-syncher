@@ -7,6 +7,7 @@ import flet as ft
 from app.core.actions import ActionChoice, ActionId, ActionOutcome
 from app.core.changelog import ChangelogParser
 from app.core.git_service import GitService
+from app.core.os_open import openFolderInExplorer
 from app.core.store import VaultStore
 from app.models.project import FileChangeKind, ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.dashboard import DashboardView, _ACTION_META
@@ -62,6 +63,11 @@ class ProjectDetailView:
             [
                 ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="Back", on_click=lambda _e: self.on_back()),
                 ft.Text(title, size=22, weight=ft.FontWeight.BOLD, expand=True),
+                ft.IconButton(
+                    icon=ft.Icons.FOLDER_OPEN,
+                    tooltip="Open folder in Explorer",
+                    on_click=lambda _e: self._openProjectFolder(),
+                ),
                 ft.IconButton(
                     icon=ft.Icons.SETTINGS,
                     tooltip="Project settings",
@@ -661,6 +667,17 @@ class ProjectDetailView:
     # --------------------------------------------------------
     # Settings / remove
     # --------------------------------------------------------
+    def _openProjectFolder(self) -> None:
+        project = self.project
+        if not project:
+            return
+        if not openFolderInExplorer(project.path):
+            Dialogs.showSnack(
+                self.page,
+                "Could not open folder. Check that the path still exists.",
+                error=True,
+            )
+
     def _editSettings(self) -> None:
         project = self.project
         if not project:

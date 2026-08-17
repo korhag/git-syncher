@@ -6,6 +6,8 @@ from typing import Callable, Optional
 import flet as ft
 
 from app.core.git_service import GitService
+from app.core.os_open import openFolderInExplorer
+from app.core.restart import restartApp
 from app.core.store import VaultStore
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.dialogs import Dialogs
@@ -47,7 +49,7 @@ class DashboardView:
         self.on_open_project = on_open_project
         self.on_lock = on_lock
         self.statuses: dict[str, ProjectStatus] = {}
-        self.list_column = ft.Column(spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
+        self.list_column = ft.Column(spacing=6, expand=True, scroll=ft.ScrollMode.AUTO)
         self.refreshing = False
         self.status_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.refresh_button = ft.FilledButton(
@@ -80,6 +82,11 @@ class DashboardView:
                             on_click=lambda _e: self.openAddProjectDialog(),
                         ),
                         ft.IconButton(
+                            icon=ft.Icons.RESTART_ALT,
+                            tooltip="Restart Git Syncher",
+                            on_click=lambda _e: self._confirmRestart(),
+                        ),
+                        ft.IconButton(
                             icon=ft.Icons.LOCK,
                             tooltip="Lock vault",
                             on_click=lambda _e: self.on_lock(),
@@ -103,6 +110,30 @@ class DashboardView:
                 ],
                 expand=True,
             ),
+        )
+
+    # --------------------------------------------------------
+    # Method: _confirmRestart
+    # Purpose: Confirm, then relaunch via run.bat / run.sh and exit.
+    # --------------------------------------------------------
+    def _confirmRestart(self) -> None:
+        def do_restart() -> None:
+            if not restartApp(self.page):
+                Dialogs.showSnack(
+                    self.page,
+                    "Could not find run.bat / run.sh next to the app.",
+                    error=True,
+                )
+
+        Dialogs.showYesNo(
+            self.page,
+            title="Restart Git Syncher?",
+            message=(
+                "This closes the app and starts it again "
+                "(run.bat on Windows, run.sh on Linux/macOS)."
+            ),
+            confirm_label="Restart",
+            on_confirm=do_restart,
         )
 
     # --------------------------------------------------------
@@ -176,7 +207,7 @@ class DashboardView:
 
     # --------------------------------------------------------
     # Method: _buildCard
-    # Purpose: One project summary card with suggested action.
+    # Purpose: Compact two-line project row using horizontal space.
     # --------------------------------------------------------
     def _buildCard(
         self,
@@ -185,10 +216,20 @@ class DashboardView:
     ) -> ft.Control:
         action = status.suggested_action if status else SuggestedAction.UNKNOWN
         label, color = _ACTION_META.get(action, ("Check", ft.Colors.GREY_400))
+
+        branch_name = ""
+        status_sentence = "Not refreshed yet"
         if status:
-            status_lines = status.plainStatusLines()
-        else:
-            status_lines = ["Not refreshed yet"]
+            lines = status.plainStatusLines()
+            body_lines: list[str] = []
+            for line in lines:
+                if line.startswith("Branch: "):
+                    branch_name = line[len("Branch: ") :].strip()
+                else:
+                    body_lines.append(line)
+            if status.branch and not branch_name:
+                branch_name = status.branch
+            status_sentence = " · ".join(body_lines) if body_lines else status.summaryLabel()
 
         def open_detail(_e: ft.ControlEvent, pid: str = project.id) -> None:
             self.on_open_project(pid)
@@ -196,43 +237,84 @@ class DashboardView:
         def quick_action(_e: ft.ControlEvent, pid: str = project.id) -> None:
             self.on_open_project(pid)
 
-        status_controls: list[ft.Control] = [
-            ft.Text(line, size=13) for line in status_lines
+        def open_folder(_e: ft.ControlEvent, folder: str = project.path) -> None:
+            if not openFolderInExplorer(folder):
+                Dialogs.showSnack(
+                    self.page,
+                    "Could not open folder. Check that the path still exists.",
+                    error=True,
+                )
+
+        title_row_controls: list[ft.Control] = [
+            ft.Text(project.name, size=15, weight=ft.FontWeight.W_600),
         ]
+        if branch_name:
+            title_row_controls.append(
+                ft.Container(
+                    content=ft.Text(branch_name, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    border_radius=10,
+                )
+            )
+        title_row_controls.append(ft.Container(expand=True))
+        title_row_controls.extend(
+            [
+                ft.IconButton(
+                    icon=ft.Icons.FOLDER_OPEN,
+                    tooltip="Open folder in Explorer",
+                    icon_size=18,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=open_folder,
+                ),
+                ft.Container(
+                    content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                    border=ft.Border.all(1, color),
+                    border_radius=16,
+                    on_click=quick_action,
+                ),
+                ft.Icon(ft.Icons.CHEVRON_RIGHT, size=18),
+            ]
+        )
 
         return ft.Card(
             content=ft.Container(
-                padding=16,
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
                 ink=True,
                 on_click=open_detail,
-                content=ft.Row(
+                content=ft.Column(
                     [
-                        ft.Column(
+                        ft.Row(
+                            title_row_controls,
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Row(
                             [
-                                ft.Text(project.name, size=16, weight=ft.FontWeight.W_600),
                                 ft.Text(
                                     project.path,
-                                    size=12,
+                                    size=11,
                                     color=ft.Colors.ON_SURFACE_VARIANT,
                                     max_lines=1,
                                     overflow=ft.TextOverflow.ELLIPSIS,
+                                    expand=True,
                                 ),
-                                *status_controls,
+                                ft.Text(
+                                    status_sentence,
+                                    size=12,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                    expand=True,
+                                    text_align=ft.TextAlign.RIGHT,
+                                ),
                             ],
-                            expand=True,
-                            spacing=4,
-                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
-                        ft.Container(
-                            content=ft.Text(label, weight=ft.FontWeight.BOLD, color=color),
-                            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                            border=ft.Border.all(1, color),
-                            border_radius=20,
-                            on_click=quick_action,
-                        ),
-                        ft.Icon(ft.Icons.CHEVRON_RIGHT),
                     ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    spacing=2,
+                    tight=True,
                 ),
             )
         )
