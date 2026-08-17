@@ -169,25 +169,16 @@ class ProjectDetailView:
         )
         self.body.controls.append(suggestion_row)
 
-        if status.changelog_version:
-            self.body.controls.append(
-                ft.Text(
-                    f"Version in Changelog.md: {status.changelog_version}",
-                    size=12,
-                    color=ft.Colors.ON_SURFACE_VARIANT,
-                )
+        self.body.controls.append(
+            ft.Column(
+                [
+                    ft.Text(line, size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+                    for line in status.versionSummaryLines()
+                ],
+                spacing=0,
+                tight=True,
             )
-        else:
-            next_version = ChangelogParser.suggestNextVersionFromTag(status.last_tag)
-            tag_note = status.last_tag or "none yet"
-            self.body.controls.append(
-                ft.Text(
-                    f"No Changelog version · latest Git tag: {tag_note} · "
-                    f"suggested next: v{next_version}",
-                    size=12,
-                    color=ft.Colors.ON_SURFACE_VARIANT,
-                )
-            )
+        )
 
         self.body.controls.append(
             ft.Text("Changed files", size=16, weight=ft.FontWeight.W_600)

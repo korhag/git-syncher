@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.actions import ActionChoice, ActionId, ActionMapper, ActionOutcome
-from app.core.changelog import ChangelogParser
+from app.core.changelog import CHANGELOG_FILENAMES, ChangelogParser
 from app.models.project import (
     FileChange,
     FileChangeKind,
@@ -205,8 +205,34 @@ class GitService:
         status.behind = behind
         status.last_tag = self._latestTag(root)
         status.changelog_version = ChangelogParser.readVersion(root)
+        status.git_changelog_version = self.readRemoteChangelogVersion(
+            root,
+            status.branch or project.default_branch,
+        )
         status.suggested_action = self._suggestAction(status)
         return status
+
+    # --------------------------------------------------------
+    # Method: readRemoteChangelogVersion
+    # Purpose: Parse Changelog version from origin/<branch> (Git's tip).
+    # --------------------------------------------------------
+    def readRemoteChangelogVersion(
+        self,
+        path: str | Path,
+        branch: str,
+    ) -> Optional[str]:
+        root = Path(path)
+        if not branch:
+            return None
+        for name in CHANGELOG_FILENAMES:
+            spec = f"origin/{branch}:{name}"
+            result = self._run(["show", spec], cwd=root, timeout=30)
+            if not result.ok:
+                continue
+            version = ChangelogParser.parseVersionFromText(result.stdout)
+            if version:
+                return version
+        return None
 
     # --------------------------------------------------------
     # Method: refreshAll
@@ -732,6 +758,9 @@ class GitService:
         run_env = os.environ.copy()
         # Never prompt interactively — map to ActionOutcome instead.
         run_env["GIT_TERMINAL_PROMPT"] = "0"
+        # Prefer UTF-8 for changelog / commit text on Windows (default is often cp1252).
+        run_env.setdefault("PYTHONUTF8", "1")
+        run_env.setdefault("LANG", "C.UTF-8")
         if env:
             run_env.update(env)
         try:
@@ -740,6 +769,8 @@ class GitService:
                 cwd=str(cwd) if cwd else None,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 env=run_env,
                 check=False,
@@ -750,14 +781,24 @@ class GitService:
                 stderr=completed.stderr or "",
             )
         except subprocess.TimeoutExpired as exc:
+            stdout = ""
+            if isinstance(exc.stdout, str):
+                stdout = exc.stdout
+            elif isinstance(exc.stdout, (bytes, bytearray)):
+                stdout = bytes(exc.stdout).decode("utf-8", errors="replace")
             return GitResult(
                 returncode=124,
-                stdout=(exc.stdout or "") if isinstance(exc.stdout, str) else "",
+                stdout=stdout,
                 stderr="Git command timed out",
             )
         except OSError as exc:
             return GitResult(returncode=127, stdout="", stderr=str(exc))
-
+        except UnicodeDecodeError as exc:
+            return GitResult(
+                returncode=1,
+                stdout="",
+                stderr=f"Could not decode Git output as UTF-8: {exc}",
+            )
     # --------------------------------------------------------
     # Method: _runWithAuth
     # Purpose: Inject PAT via temporary askpass helper for HTTPS.

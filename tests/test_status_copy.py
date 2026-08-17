@@ -107,3 +107,51 @@ class TestPlainStatusLines:
         status = _status(ahead=1)
         assert " · " in status.summaryLabel()
         assert "This computer has 1 commit" in status.summaryLabel()
+
+
+# ------------------------------------------------------------
+# Tests: ProjectStatus.versionSummaryLines
+# ------------------------------------------------------------
+class TestVersionSummaryLines:
+    # --------------------------------------------------------
+    # Method: testLocalAndGitVersionsLabeled
+    # --------------------------------------------------------
+    def testLocalAndGitVersionsLabeled(self) -> None:
+        status = _status(
+            branch="main",
+            changelog_version="0.27.1",
+            git_changelog_version="0.26.0",
+            last_tag="v0.26.0",
+        )
+        lines = status.versionSummaryLines()
+        assert lines[0] == "This computer: v0.27.1"
+        assert "Git (latest commit on origin/main): v0.26.0" in lines[1]
+        assert "Git tag: v0.26.0" in lines[2]
+        assert "local and Git differ" in lines[2]
+
+    # --------------------------------------------------------
+    # Method: testVersionsMatch
+    # --------------------------------------------------------
+    def testVersionsMatch(self) -> None:
+        status = _status(
+            branch="main",
+            changelog_version="1.0.0",
+            git_changelog_version="1.0.0",
+            last_tag="v1.0.0",
+        )
+        lines = status.versionSummaryLines()
+        assert "local and Git match" in lines[2]
+
+    # --------------------------------------------------------
+    # Method: testMissingGitChangelog
+    # --------------------------------------------------------
+    def testMissingGitChangelog(self) -> None:
+        status = _status(
+            branch="main",
+            changelog_version="0.27.1",
+            git_changelog_version=None,
+            last_tag="",
+        )
+        lines = status.versionSummaryLines()
+        assert "This computer: v0.27.1" in lines[0]
+        assert "none" in lines[1].lower()

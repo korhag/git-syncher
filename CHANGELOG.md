@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Project detail shows **This computer** Changelog version, **Git (latest commit)** Changelog version, and **Git tag** side by side
+
+### Fixed
+
+- Git command output is decoded as UTF-8 on Windows (no more crash when Changelog has special characters)
+
 ## [1.2.0] - 2026-08-17
 
 ### Added

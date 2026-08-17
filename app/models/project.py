@@ -125,9 +125,56 @@ class ProjectStatus:
     changes: list[FileChange] = field(default_factory=list)
     last_tag: str = ""
     changelog_version: Optional[str] = None
+    git_changelog_version: Optional[str] = None
     suggested_action: SuggestedAction = SuggestedAction.UNKNOWN
     error_message: str = ""
     remote_url: str = ""
+
+    # --------------------------------------------------------
+    # Method: versionSummaryLines
+    # Purpose: Labeled This computer / Git commit / Git tag lines.
+    # --------------------------------------------------------
+    def versionSummaryLines(self) -> list[str]:
+        from app.core.changelog import ChangelogParser
+
+        if not (
+            self.changelog_version or self.git_changelog_version or self.last_tag
+        ):
+            next_version = ChangelogParser.suggestNextVersionFromTag(self.last_tag)
+            return [
+                "This computer: none (no version in Changelog.md)",
+                "Git (latest commit): none",
+                f"Git tag: none · suggested next: v{next_version}",
+            ]
+
+        local_label = (
+            f"v{self.changelog_version}"
+            if self.changelog_version
+            else "none (no version in Changelog.md)"
+        )
+        git_label = (
+            f"v{self.git_changelog_version}"
+            if self.git_changelog_version
+            else "none (no Changelog on that commit, or remote not fetched)"
+        )
+        tag_label = self.last_tag if self.last_tag else "none"
+        branch = self.branch or "…"
+        match_note = ""
+        if self.changelog_version and self.git_changelog_version:
+            cmp = ChangelogParser.compareVersions(
+                self.changelog_version,
+                self.git_changelog_version,
+            )
+            if cmp == 0:
+                match_note = " · local and Git match"
+            else:
+                match_note = " · local and Git differ"
+
+        return [
+            f"This computer: {local_label}",
+            f"Git (latest commit on origin/{branch}): {git_label}",
+            f"Git tag: {tag_label}{match_note}",
+        ]
 
     # --------------------------------------------------------
     # Method: plainStatusLines

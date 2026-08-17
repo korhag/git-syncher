@@ -18,6 +18,9 @@ _RE_SIMPLE = re.compile(
 
 _CHANGELOG_NAMES = ("CHANGELOG.md", "Changelog.md", "changelog.md")
 
+# Public alias for other modules (git show origin/branch:...)
+CHANGELOG_FILENAMES = _CHANGELOG_NAMES
+
 
 # ------------------------------------------------------------
 # Class: ChangelogParser
