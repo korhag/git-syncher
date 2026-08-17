@@ -153,7 +153,7 @@ class DashboardView:
 
         try:
             self.statuses = self.git.refreshAll(self.store.projects, fetch=True)
-            # Persist any default_branch corrections from detected branches.
+            # Persist vault (e.g. remote URL detections); do not rewrite default_branch.
             try:
                 self.store.save()
             except Exception:
@@ -559,13 +559,28 @@ class DashboardView:
 
                 self.git.applyLocalIdentity(path, project.username, project.email)
 
+                switch = self.git.checkoutSavedBranch(project)
+                if not switch.success:
+                    # Still save the picked branch name, but tell the user why
+                    # this computer did not switch yet.
+                    if editing:
+                        self.store.updateProject(project)
+                    else:
+                        self.store.addProject(project)
+                    error_text.value = switch.message or switch.title
+                    self.page.update()
+                    return
+
                 if editing:
                     self.store.updateProject(project)
                 else:
                     self.store.addProject(project)
 
                 close()
-                Dialogs.showSnack(self.page, "Project saved")
+                if switch.message and switch.title.startswith("Switched"):
+                    Dialogs.showSnack(self.page, switch.title)
+                else:
+                    Dialogs.showSnack(self.page, "Project saved")
                 self.refreshAll()
             except Exception as exc:  # noqa: BLE001
                 error_text.value = str(exc)

@@ -283,9 +283,8 @@ class GitService:
         status.is_repo = True
         status.branch = self.detectBranch(root) or project.default_branch
         status.remote_url = self.detectRemoteUrl(root) or project.remote_url
-        # Keep stored default branch aligned with the branch you are actually on.
-        if status.branch and status.branch != project.default_branch:
-            project.default_branch = status.branch
+        # Do not overwrite project.default_branch from the checkout — that setting
+        # is chosen in Edit project and drives checkoutSavedBranch on Save.
 
         if fetch and (project.remote_url or status.remote_url):
             self._runWithAuth(
@@ -462,6 +461,82 @@ class GitService:
         return ActionMapper.mapError("commit", result.stderr, result.stdout, result.returncode)
 
     # --------------------------------------------------------
+    # Method: checkoutSavedBranch
+    # Purpose: Switch this folder to project.default_branch (origin tip).
+    # --------------------------------------------------------
+    def checkoutSavedBranch(self, project: ProjectConfig) -> ActionOutcome:
+        root = Path(project.path)
+        target = (project.default_branch or "").strip()
+        if not target:
+            return ActionMapper.success("No branch selected", "")
+
+        current = self.detectBranch(root)
+        if current == target:
+            return ActionMapper.success("Already on branch", target)
+
+        if self.listChanges(root):
+            return ActionOutcome(
+                title="Cannot switch branch",
+                message=(
+                    f"Cannot switch to {target} while this computer has unsaved files. "
+                    "Commit or discard them first, then save again."
+                ),
+                choices=[],
+                details="",
+            )
+
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not fetch.ok:
+            return ActionMapper.mapError(
+                "fetch",
+                fetch.stderr,
+                fetch.stdout,
+                fetch.returncode,
+            )
+
+        remote_ref = f"origin/{target}"
+        remote_ok = self._run(["rev-parse", "--verify", remote_ref], cwd=root)
+        if not remote_ok.ok:
+            return ActionOutcome(
+                title="Remote branch not found",
+                message=(
+                    f"Git does not have origin/{target}. "
+                    "Pick a branch that exists on the remote (click refresh in settings)."
+                ),
+                choices=[],
+                details=remote_ok.stderr,
+            )
+
+        local_ok = self._run(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{target}"],
+            cwd=root,
+        )
+        if local_ok.ok:
+            result = self._run(["checkout", target], cwd=root)
+        else:
+            result = self._run(
+                ["checkout", "-b", target, "--track", remote_ref],
+                cwd=root,
+            )
+            if not result.ok:
+                # Fallback when --track is unavailable for this ref shape.
+                result = self._run(["checkout", "-B", target, remote_ref], cwd=root)
+
+        if not result.ok:
+            return ActionMapper.mapError(
+                "checkout",
+                result.stderr,
+                result.stdout,
+                result.returncode,
+            )
+        return ActionMapper.success(f"Switched to {target}", remote_ref)
+
+    # --------------------------------------------------------
     # Method: pull
     # Purpose: Pull from origin for the branch you are on.
     # --------------------------------------------------------
@@ -474,8 +549,6 @@ class GitService:
         root = Path(project.path)
         current = self.detectBranch(root)
         target = (branch or current or project.default_branch or "main").strip()
-        if current and project.default_branch != current:
-            project.default_branch = current
         args = ["pull"]
         if rebase:
             args.append("--rebase")
@@ -495,6 +568,7 @@ class GitService:
     # --------------------------------------------------------
     # Method: push
     # Purpose: Push current branch; optional force with lease.
+    #          Force also updates remote default when it differs.
     # --------------------------------------------------------
     def push(
         self,
@@ -512,10 +586,35 @@ class GitService:
         else:
             args.extend(["origin", branch])
         result = self._runWithAuth(args, cwd=root, project=project, timeout=120)
-        if result.ok:
-            label = "Force push complete" if force else "Push complete"
-            return ActionMapper.success(label, result.stdout.strip() or branch)
-        return ActionMapper.mapError("push", result.stderr, result.stdout, result.returncode)
+        if not result.ok:
+            return ActionMapper.mapError(
+                "push",
+                result.stderr,
+                result.stdout,
+                result.returncode,
+            )
+
+        updated = [branch]
+        if force:
+            remote_default = self.detectRemoteDefaultBranch(root)
+            if remote_default and remote_default != branch:
+                second = self._runWithAuth(
+                    ["push", "--force-with-lease", "origin", f"HEAD:{remote_default}"],
+                    cwd=root,
+                    project=project,
+                    timeout=120,
+                )
+                if not second.ok:
+                    return ActionMapper.mapError(
+                        "push",
+                        second.stderr,
+                        second.stdout,
+                        second.returncode,
+                    )
+                updated.append(remote_default)
+
+        label = "Force push complete" if force else "Push complete"
+        return ActionMapper.success(label, " and ".join(updated))
 
     # --------------------------------------------------------
     # Method: createTag

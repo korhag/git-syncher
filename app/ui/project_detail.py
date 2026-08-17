@@ -321,21 +321,56 @@ class ProjectDetailView:
     # Purpose: Present resolve choices when branches diverge.
     # --------------------------------------------------------
     def _openResolveHelp(self) -> None:
-        outcome = ActionOutcome(
-            title="Resolve differences",
-            message=(
+        current = ""
+        remote_default = ""
+        if self.status:
+            current = self.status.branch or ""
+            remote_default = self.status.remote_default_branch or ""
+        if self.project and not current:
+            current = self.git.detectBranch(self.project.path)
+
+        if (
+            current
+            and remote_default
+            and current != remote_default
+            and self.status
+            and self.status.diverges_from_default
+        ):
+            message = (
+                f"This computer is on {current}. "
+                f"Git’s default branch (website) is {remote_default}. "
+                "They are not the same. "
+                f"Next: make this computer match Git ({remote_default}), "
+                f"or overwrite Git online ({current} and {remote_default})."
+            )
+            overwrite_desc = (
+                f"Replace Git’s {remote_default} (website default) and {current} "
+                "with this computer."
+            )
+            match_desc = (
+                f"Throw away local commits and files, then reset to origin/{remote_default}. "
+                "Git online is not changed."
+            )
+        else:
+            message = (
                 "This computer and Git differ. "
                 "Next: make this computer match Git (recommended if you do not care about local commits), "
                 "or overwrite Git online."
-            ),
+            )
+            overwrite_desc = "Force-push this computer’s branch to Git (can erase remote commits)."
+            match_desc = (
+                "Throw away local commits and files. "
+                "Git online is not changed."
+            )
+
+        outcome = ActionOutcome(
+            title="Resolve differences",
+            message=message,
             choices=[
                 ActionChoice(
                     ActionId.MATCH_REMOTE,
                     "Make this computer match Git",
-                    description=(
-                        "Throw away local commits and files. "
-                        "Git online is not changed."
-                    ),
+                    description=match_desc,
                     destructive=True,
                     requires_confirm=True,
                 ),
@@ -344,6 +379,7 @@ class ProjectDetailView:
                 ActionChoice(
                     ActionId.OVERWRITE_REMOTE,
                     "Overwrite remote",
+                    description=overwrite_desc,
                     destructive=True,
                     requires_confirm=True,
                 ),
@@ -396,12 +432,6 @@ class ProjectDetailView:
         if not project:
             return
         current = self.git.detectBranch(project.path)
-        if current:
-            project.default_branch = current
-            try:
-                self.store.save()
-            except Exception:
-                pass
         outcome = self.git.pull(project, branch=current or None)
         self._handleOutcome(outcome, retry=self._pullCurrentBranch)
         if outcome.success:
@@ -447,13 +477,27 @@ class ProjectDetailView:
             self.reload(silent=True)
 
         if force:
+            current = self.git.detectBranch(project.path) or project.default_branch or "…"
+            remote_default = ""
+            if self.status and self.status.remote_default_branch:
+                remote_default = self.status.remote_default_branch
+            else:
+                remote_default = self.git.detectRemoteDefaultBranch(project.path)
+            if remote_default and remote_default != current:
+                confirm_msg = (
+                    f"This force-pushes this computer ({current}) to Git and also "
+                    f"replaces Git’s default branch {remote_default} (what the website shows). "
+                    "Only continue if you are sure."
+                )
+            else:
+                confirm_msg = (
+                    "This force-pushes your local branch and can erase commits on the remote. "
+                    "Only continue if you are sure."
+                )
             Dialogs.showConfirm(
                 self.page,
                 title="Overwrite remote?",
-                message=(
-                    "This force-pushes your local branch and can erase commits on the remote. "
-                    "Only continue if you are sure."
-                ),
+                message=confirm_msg,
                 confirm_label="Overwrite remote",
                 on_confirm=lambda: run_push(None),
             )

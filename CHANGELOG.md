@@ -5,6 +5,21 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-08-17
+
+### Added
+
+- Saving a Default branch in Edit project **checks out** that branch (from `origin/<name>`) so picking **main** actually switches this computer off **master**
+
+### Changed
+
+- Overwrite remote (force push) also updates Git’s **default** branch when it differs from the current branch (so the website matches this computer)
+- Resolve / overwrite confirmations name **master** vs **main** when those differ
+
+### Fixed
+
+- Refresh no longer overwrites the saved Default branch with whatever branch the folder happens to be on
+
 ## [1.5.0] - 2026-08-17
 
 ### Added
