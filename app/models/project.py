@@ -14,6 +14,7 @@ class SuggestedAction(str, Enum):
     COMMIT = "commit"
     PUSH = "push"
     PULL = "pull"
+    MERGE = "merge"
     RESOLVE = "resolve"
     UNKNOWN = "unknown"
     NOT_A_REPO = "not_a_repo"
@@ -180,6 +181,44 @@ class ProjectStatus:
             f"This computer: {local_label}",
             f"Git (latest commit on origin/{git_branch}): {git_label}",
             f"Git tag: {tag_label}{match_note}",
+        ]
+
+    # --------------------------------------------------------
+    # Method: comparedGitBranch
+    # Purpose: Remote branch name status is comparing against.
+    # --------------------------------------------------------
+    def comparedGitBranch(self) -> str:
+        if self.diverges_from_default and self.remote_default_branch:
+            return self.remote_default_branch
+        return self.branch or ""
+
+    # --------------------------------------------------------
+    # Method: dashboardCompareLines
+    # Purpose: Two short lines for the main-page card when local ≠ Git.
+    # Output: list[str] with two lines, or empty when not needed.
+    # --------------------------------------------------------
+    def dashboardCompareLines(self) -> list[str]:
+        if not self.path_exists or not self.is_repo:
+            return []
+        needs = (
+            self.diverges_from_default
+            or self.upstream_missing
+            or bool(self.ahead and self.behind)
+            or self.suggested_action
+            in (SuggestedAction.MERGE, SuggestedAction.RESOLVE)
+        )
+        if not needs:
+            return []
+
+        local_branch = self.branch or "…"
+        git_branch = self.comparedGitBranch() or "…"
+        local_ver = f" · v{self.changelog_version}" if self.changelog_version else ""
+        git_ver = (
+            f" · v{self.git_changelog_version}" if self.git_changelog_version else ""
+        )
+        return [
+            f"This computer: {local_branch}{local_ver}",
+            f"Git: {git_branch}{git_ver}",
         ]
 
     # --------------------------------------------------------

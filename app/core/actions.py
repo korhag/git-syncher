@@ -21,6 +21,8 @@ class ActionId(str, Enum):
     PULL_FIRST = "pull_first"
     PULL_CURRENT_BRANCH = "pull_current_branch"
     OVERWRITE_REMOTE = "overwrite_remote"
+    MERGE_BRING_REMOTE = "merge_bring_remote"
+    MERGE_SEND_TO_REMOTE = "merge_send_to_remote"
     INIT_REPO = "init_repo"
     SET_REMOTE = "set_remote"
     FIRST_PUSH = "first_push"

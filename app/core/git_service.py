@@ -617,6 +617,169 @@ class GitService:
         return ActionMapper.success(label, " and ".join(updated))
 
     # --------------------------------------------------------
+    # Method: mergeBringRemote
+    # Purpose: Merge origin/<remote_branch> into the current checkout.
+    # --------------------------------------------------------
+    def mergeBringRemote(
+        self,
+        project: ProjectConfig,
+        remote_branch: str,
+    ) -> ActionOutcome:
+        root = Path(project.path)
+        target = (remote_branch or "").strip()
+        if not target:
+            return ActionOutcome(
+                title="No remote branch",
+                message="Could not tell which Git branch to merge from.",
+            )
+        if self.listChanges(root):
+            return ActionOutcome(
+                title="Unsaved files",
+                message=(
+                    "Commit or discard unsaved files on this computer before merging."
+                ),
+            )
+
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not fetch.ok:
+            return ActionMapper.mapError(
+                "fetch",
+                fetch.stderr,
+                fetch.stdout,
+                fetch.returncode,
+            )
+
+        remote_ref = f"origin/{target}"
+        check = self._run(["rev-parse", "--verify", remote_ref], cwd=root)
+        if not check.ok:
+            return ActionOutcome(
+                title="Remote branch not found",
+                message=f"Git does not have {remote_ref} to merge from.",
+                details=check.stderr,
+            )
+
+        current = self.detectBranch(root) or "this branch"
+        result = self._run(
+            ["merge", "--no-edit", remote_ref],
+            cwd=root,
+            timeout=120,
+        )
+        if result.ok:
+            return ActionMapper.success(
+                "Merge complete",
+                f"Merged {remote_ref} into {current}",
+            )
+        return ActionMapper.mapError(
+            "merge",
+            result.stderr,
+            result.stdout,
+            result.returncode,
+            local_branch=current,
+            requested_branch=target,
+        )
+
+    # --------------------------------------------------------
+    # Method: mergeSendToRemote
+    # Purpose: Merge current checkout into origin/<remote_branch>, then push.
+    # --------------------------------------------------------
+    def mergeSendToRemote(
+        self,
+        project: ProjectConfig,
+        remote_branch: str,
+    ) -> ActionOutcome:
+        root = Path(project.path)
+        target = (remote_branch or "").strip()
+        if not target:
+            return ActionOutcome(
+                title="No remote branch",
+                message="Could not tell which Git branch to merge into.",
+            )
+        if self.listChanges(root):
+            return ActionOutcome(
+                title="Unsaved files",
+                message=(
+                    "Commit or discard unsaved files on this computer before merging."
+                ),
+            )
+
+        was_on = self.detectBranch(root)
+        if not was_on:
+            return ActionOutcome(
+                title="Detached HEAD",
+                message="Check out a branch on this computer first, then try again.",
+            )
+
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not fetch.ok:
+            return ActionMapper.mapError(
+                "fetch",
+                fetch.stderr,
+                fetch.stdout,
+                fetch.returncode,
+            )
+
+        remote_ref = f"origin/{target}"
+        check = self._run(["rev-parse", "--verify", remote_ref], cwd=root)
+        if not check.ok:
+            return ActionOutcome(
+                title="Remote branch not found",
+                message=f"Git does not have {remote_ref} to merge into.",
+                details=check.stderr,
+            )
+
+        checkout = self._run(["checkout", "-B", target, remote_ref], cwd=root)
+        if not checkout.ok:
+            return ActionMapper.mapError(
+                "checkout",
+                checkout.stderr,
+                checkout.stdout,
+                checkout.returncode,
+            )
+
+        merge = self._run(["merge", "--no-edit", was_on], cwd=root, timeout=120)
+        if not merge.ok:
+            return ActionMapper.mapError(
+                "merge",
+                merge.stderr,
+                merge.stdout,
+                merge.returncode,
+                local_branch=was_on,
+                requested_branch=target,
+            )
+
+        push = self._runWithAuth(
+            ["push", "origin", target],
+            cwd=root,
+            project=project,
+            timeout=120,
+        )
+        if not push.ok:
+            return ActionMapper.mapError(
+                "push",
+                push.stderr,
+                push.stdout,
+                push.returncode,
+            )
+
+        if was_on != target:
+            self._run(["checkout", was_on], cwd=root)
+
+        return ActionMapper.success(
+            "Merge and push complete",
+            f"Merged {was_on} into {target} and pushed",
+        )
+
+    # --------------------------------------------------------
     # Method: createTag
     # Purpose: Create an annotated (or lightweight) version tag locally.
     # --------------------------------------------------------
@@ -900,13 +1063,13 @@ class GitService:
         if any(change.kind == FileChangeKind.CONFLICT for change in status.changes):
             return SuggestedAction.RESOLVE
         if status.diverges_from_default:
-            return SuggestedAction.RESOLVE
+            return SuggestedAction.MERGE
         if status.upstream_missing:
             return SuggestedAction.RESOLVE
         if status.dirty:
             return SuggestedAction.COMMIT
         if status.ahead and status.behind:
-            return SuggestedAction.RESOLVE
+            return SuggestedAction.MERGE
         if status.behind:
             return SuggestedAction.PULL
         if status.ahead:

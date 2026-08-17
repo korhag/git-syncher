@@ -99,13 +99,21 @@ class TestPlainStatusLines:
             branch="master",
             remote_default_branch="main",
             diverges_from_default=True,
-            suggested_action=SuggestedAction.RESOLVE,
+            suggested_action=SuggestedAction.MERGE,
+            changelog_version="1.4.1",
+            git_changelog_version="1.2.1",
         )
         lines = status.plainStatusLines()
         assert any("This computer is on master" in line for line in lines)
         assert any("default branch is main" in line for line in lines)
         assert any("not the same" in line for line in lines)
         assert not any("in sync" in line.lower() for line in lines)
+
+        compare = status.dashboardCompareLines()
+        assert compare == [
+            "This computer: master · v1.4.1",
+            "Git: main · v1.2.1",
+        ]
 
     # --------------------------------------------------------
     # Method: testUpstreamMissing

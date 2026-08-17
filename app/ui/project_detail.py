@@ -230,6 +230,13 @@ class ProjectDetailView:
                 f"Git has {status.behind} {noun} this computer does not have yet — "
                 "Pull downloads them."
             )
+        if status.suggested_action == SuggestedAction.MERGE:
+            compared = status.comparedGitBranch() or "Git"
+            local = status.branch or "this computer"
+            return (
+                f"This computer ({local}) and Git ({compared}) differ — "
+                "Merge lets you pick which way to combine them."
+            )
         if status.suggested_action == SuggestedAction.RESOLVE:
             if status.ahead and status.behind:
                 return (
@@ -307,6 +314,7 @@ class ProjectDetailView:
             SuggestedAction.COMMIT: self.doCommit,
             SuggestedAction.PUSH: self.doPush,
             SuggestedAction.PULL: self.doPull,
+            SuggestedAction.MERGE: self._openMergeHelp,
             SuggestedAction.RESOLVE: self._openResolveHelp,
             SuggestedAction.NOT_A_REPO: self._editSettings,
         }
@@ -315,6 +323,62 @@ class ProjectDetailView:
             handler()
         else:
             Dialogs.showSnack(self.page, "Nothing to do — already synced.")
+
+    # --------------------------------------------------------
+    # Method: _openMergeHelp
+    # Purpose: Real merge direction picker + destructive shortcuts.
+    # --------------------------------------------------------
+    def _openMergeHelp(self) -> None:
+        current = ""
+        compared = ""
+        if self.status:
+            current = self.status.branch or ""
+            compared = self.status.comparedGitBranch()
+        if self.project and not current:
+            current = self.git.detectBranch(self.project.path)
+        if not compared:
+            compared = (
+                self.git.detectRemoteDefaultBranch(self.project.path)
+                if self.project
+                else ""
+            ) or current
+
+        outcome = ActionOutcome(
+            title="Merge",
+            message=(
+                f"This computer is on {current or '…'}. "
+                f"Git compared branch is {compared or '…'}. "
+                "Choose a real merge direction (keeps both histories when possible)."
+            ),
+            choices=[
+                ActionChoice(
+                    ActionId.MERGE_BRING_REMOTE,
+                    "Bring Git into this computer",
+                    description=f"Merge origin/{compared} into {current}",
+                ),
+                ActionChoice(
+                    ActionId.MERGE_SEND_TO_REMOTE,
+                    "Send this computer into Git",
+                    description=f"Merge {current} into {compared} and push",
+                ),
+                ActionChoice(
+                    ActionId.MATCH_REMOTE,
+                    "Make this computer match Git",
+                    description="Destructive: reset this folder to Git (no merge).",
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(
+                    ActionId.OVERWRITE_REMOTE,
+                    "Overwrite remote",
+                    description="Destructive: force-push this computer to Git.",
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(ActionId.CANCEL, "Cancel"),
+            ],
+        )
+        self._handleOutcome(outcome, retry=self._openMergeHelp)
 
     # --------------------------------------------------------
     # Method: _openResolveHelp
@@ -572,6 +636,43 @@ class ProjectDetailView:
         if action_id == ActionId.OVERWRITE_REMOTE:
             self.doPush(force=True, set_upstream=False)
             return
+        if action_id == ActionId.MERGE_BRING_REMOTE:
+            if not project:
+                return
+            compared = ""
+            if self.status:
+                compared = self.status.comparedGitBranch()
+            if not compared:
+                compared = self.git.detectRemoteDefaultBranch(project.path)
+            current = self.git.detectBranch(project.path) or "…"
+            Dialogs.showConfirm(
+                self.page,
+                title="Bring Git into this computer?",
+                message=f"Merge origin/{compared} into {current} on this computer.",
+                confirm_label="Merge",
+                on_confirm=lambda: self._runMergeBring(compared),
+            )
+            return
+        if action_id == ActionId.MERGE_SEND_TO_REMOTE:
+            if not project:
+                return
+            compared = ""
+            if self.status:
+                compared = self.status.comparedGitBranch()
+            if not compared:
+                compared = self.git.detectRemoteDefaultBranch(project.path)
+            current = self.git.detectBranch(project.path) or "…"
+            Dialogs.showConfirm(
+                self.page,
+                title="Send this computer into Git?",
+                message=(
+                    f"Merge {current} into {compared}, push to Git, "
+                    f"then return to {current} if possible."
+                ),
+                confirm_label="Merge and push",
+                on_confirm=lambda: self._runMergeSend(compared),
+            )
+            return
         if action_id == ActionId.FIRST_PUSH:
             self.doPush(force=False, set_upstream=True)
             return
@@ -637,6 +738,35 @@ class ProjectDetailView:
             except Exception:
                 pass
             self.reload(silent=True)
+
+    # --------------------------------------------------------
+    # Method: _runMergeBring
+    # Purpose: Merge origin/<compared> into the current branch.
+    # --------------------------------------------------------
+    def _runMergeBring(self, compared: str) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.mergeBringRemote(project, compared)
+        self._handleOutcome(outcome, retry=lambda: self._runMergeBring(compared))
+        self.reload(silent=True)
+
+    # --------------------------------------------------------
+    # Method: _runMergeSend
+    # Purpose: Merge current branch into compared remote branch and push.
+    # --------------------------------------------------------
+    def _runMergeSend(self, compared: str) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.mergeSendToRemote(project, compared)
+        self._handleOutcome(outcome, retry=lambda: self._runMergeSend(compared))
+        if outcome.success:
+            try:
+                self.store.save()
+            except Exception:
+                pass
+        self.reload(silent=True)
 
     # --------------------------------------------------------
     # Per-file helpers

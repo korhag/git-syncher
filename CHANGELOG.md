@@ -5,6 +5,18 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-08-17
+
+### Added
+
+- Dashboard cards show **This computer** vs **Git** on two lines when they differ (branch + Changelog version)
+- **Merge** action with direction picker: bring Git into this computer, or send this computer into Git (real `git merge`, then push when sending)
+- Merge conflicts open the existing file-by-file resolve path (no auto-resolve)
+
+### Changed
+
+- When histories diverge, the suggested chip is **Merge** instead of only Resolve; overwrite / match-Git remain as destructive options in the same dialog
+
 ## [1.6.0] - 2026-08-17
 
 ### Added

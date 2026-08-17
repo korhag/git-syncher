@@ -89,10 +89,14 @@ class TestDefaultBranchDiverge:
             assert status.diverges_from_default is True
             assert status.ahead == 0
             assert status.behind == 0
-            assert status.suggested_action == SuggestedAction.RESOLVE
+            assert status.suggested_action == SuggestedAction.MERGE
             lines = status.plainStatusLines()
             assert any("default branch is main" in line for line in lines)
             assert any("not the same" in line for line in lines)
+
+            compare = status.dashboardCompareLines()
+            assert compare[0].startswith("This computer: master")
+            assert compare[1].startswith("Git: main")
 
             # Match Git should prefer origin/main (default), not origin/master
             remote_ref = service._resolveOriginBranch(clone, project)
@@ -305,3 +309,68 @@ class TestHonorSavedBranchAndForcePush:
             status = service.getStatus(project, fetch=False)
             assert status.diverges_from_default is False
             assert status.suggested_action == SuggestedAction.SYNCED
+
+    # --------------------------------------------------------
+    # Method: testMergeBringRemoteCombinesHistories
+    # --------------------------------------------------------
+    def testMergeBringRemoteCombinesHistories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = self._setupMainAndMaster(Path(tmp))
+            # Make additive non-conflicting tips: main has only-main.txt, master already has Changelog.
+            _runGit(clone, "checkout", "main")
+            _writeFile(clone / "only-main.txt", "from main\n")
+            _runGit(clone, "add", ".")
+            _runGit(clone, "commit", "-m", "main only file")
+            _runGit(clone, "push", "origin", "main")
+            _runGit(clone, "checkout", "master")
+
+            service = GitService()
+            project = ProjectConfig(
+                id="p7",
+                name="demo",
+                path=str(clone),
+                remote_url=str(bare),
+                default_branch="master",
+            )
+            outcome = service.mergeBringRemote(project, "main")
+            assert outcome.success is True, outcome.message or outcome.title
+            assert (clone / "only-main.txt").is_file()
+            assert service.detectBranch(clone) == "master"
+
+    # --------------------------------------------------------
+    # Method: testMergeSendToRemoteUpdatesMain
+    # --------------------------------------------------------
+    def testMergeSendToRemoteUpdatesMain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = self._setupMainAndMaster(Path(tmp))
+            # Avoid Changelog conflict: reset master Changelog to match main, keep unique file.
+            _runGit(clone, "checkout", "main")
+            main_changelog = (clone / "Changelog.md").read_text(encoding="utf-8")
+            _runGit(clone, "checkout", "master")
+            _writeFile(clone / "Changelog.md", main_changelog)
+            _writeFile(clone / "only-master.txt", "from master\n")
+            _runGit(clone, "add", ".")
+            _runGit(clone, "commit", "-m", "master only file aligned changelog")
+
+            service = GitService()
+            project = ProjectConfig(
+                id="p8",
+                name="demo",
+                path=str(clone),
+                remote_url=str(bare),
+                default_branch="master",
+            )
+            outcome = service.mergeSendToRemote(project, "main")
+            assert outcome.success is True, outcome.message or outcome.title
+
+            # Bare main should contain only-master.txt via merge
+            show = subprocess.run(
+                ["git", "show", "main:only-master.txt"],
+                cwd=bare,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert show.returncode == 0
+            assert "from master" in show.stdout
+            assert service.detectBranch(clone) == "master"

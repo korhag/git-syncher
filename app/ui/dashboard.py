@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 import flet as ft
 
+from app.core.actions import ActionChoice, ActionId, ActionOutcome
 from app.core.git_service import GitService
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.restart import restartApp
@@ -19,6 +20,7 @@ _ACTION_META: dict[SuggestedAction, tuple[str, str]] = {
     SuggestedAction.COMMIT: ("Commit", ft.Colors.AMBER_400),
     SuggestedAction.PUSH: ("Push", ft.Colors.BLUE_400),
     SuggestedAction.PULL: ("Pull", ft.Colors.CYAN_400),
+    SuggestedAction.MERGE: ("Merge", ft.Colors.ORANGE_400),
     SuggestedAction.RESOLVE: ("Resolve", ft.Colors.ORANGE_400),
     SuggestedAction.NOT_A_REPO: ("Init Git", ft.Colors.GREY_400),
     SuggestedAction.MISSING_PATH: ("Missing", ft.Colors.RED_400),
@@ -219,7 +221,9 @@ class DashboardView:
 
         branch_name = ""
         status_sentence = "Not refreshed yet"
+        compare_lines: list[str] = []
         if status:
+            compare_lines = status.dashboardCompareLines()
             lines = status.plainStatusLines()
             body_lines: list[str] = []
             for line in lines:
@@ -235,7 +239,10 @@ class DashboardView:
             self.on_open_project(pid)
 
         def quick_action(_e: ft.ControlEvent, pid: str = project.id) -> None:
-            self.on_open_project(pid)
+            if action == SuggestedAction.MERGE:
+                self.openMergeDialog(pid)
+            else:
+                self.on_open_project(pid)
 
         def open_folder(_e: ft.ControlEvent, folder: str = project.path) -> None:
             if not openFolderInExplorer(folder):
@@ -311,6 +318,33 @@ class DashboardView:
             ]
         )
 
+        if compare_lines:
+            status_block: ft.Control = ft.Column(
+                [
+                    ft.Text(
+                        line,
+                        size=12,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        text_align=ft.TextAlign.RIGHT,
+                    )
+                    for line in compare_lines
+                ],
+                spacing=0,
+                tight=True,
+                expand=True,
+                horizontal_alignment=ft.CrossAxisAlignment.END,
+            )
+        else:
+            status_block = ft.Text(
+                status_sentence,
+                size=12,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+                expand=True,
+                text_align=ft.TextAlign.RIGHT,
+            )
+
         return ft.Card(
             content=ft.Container(
                 padding=ft.Padding.symmetric(horizontal=12, vertical=8),
@@ -333,14 +367,7 @@ class DashboardView:
                                     overflow=ft.TextOverflow.ELLIPSIS,
                                     expand=True,
                                 ),
-                                ft.Text(
-                                    status_sentence,
-                                    size=12,
-                                    max_lines=1,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                    expand=True,
-                                    text_align=ft.TextAlign.RIGHT,
-                                ),
+                                status_block,
                             ],
                             spacing=12,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -351,6 +378,200 @@ class DashboardView:
                 ),
             )
         )
+
+    # --------------------------------------------------------
+    # Method: openMergeDialog
+    # Purpose: Pick merge direction (bring Git vs send to Git).
+    # --------------------------------------------------------
+    def openMergeDialog(self, project_id: str) -> None:
+        project = next((p for p in self.store.projects if p.id == project_id), None)
+        if not project:
+            return
+        status = self.statuses.get(project_id)
+        current = (status.branch if status else "") or self.git.detectBranch(project.path)
+        compared = ""
+        if status:
+            compared = status.comparedGitBranch()
+        if not compared:
+            compared = self.git.detectRemoteDefaultBranch(project.path) or current
+
+        message = (
+            f"This computer is on {current or '…'}. "
+            f"Git compared branch is {compared or '…'}. "
+            "Choose a real merge direction (keeps both histories when possible)."
+        )
+        outcome = ActionOutcome(
+            title="Merge",
+            message=message,
+            choices=[
+                ActionChoice(
+                    ActionId.MERGE_BRING_REMOTE,
+                    "Bring Git into this computer",
+                    description=f"Merge origin/{compared} into {current}",
+                ),
+                ActionChoice(
+                    ActionId.MERGE_SEND_TO_REMOTE,
+                    "Send this computer into Git",
+                    description=f"Merge {current} into {compared} and push",
+                ),
+                ActionChoice(
+                    ActionId.MATCH_REMOTE,
+                    "Make this computer match Git",
+                    description="Destructive: reset this folder to Git (no merge).",
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(
+                    ActionId.OVERWRITE_REMOTE,
+                    "Overwrite remote",
+                    description="Destructive: force-push this computer to Git.",
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(ActionId.CANCEL, "Cancel"),
+            ],
+        )
+
+        def on_choice(action_id: ActionId) -> None:
+            self._dispatchMergeChoice(project, compared, action_id)
+
+        Dialogs.showChoice(self.page, outcome, on_choice)
+
+    # --------------------------------------------------------
+    # Method: _dispatchMergeChoice
+    # Purpose: Run merge / destructive resolve from the dashboard dialog.
+    # --------------------------------------------------------
+    def _dispatchMergeChoice(
+        self,
+        project: ProjectConfig,
+        compared: str,
+        action_id: ActionId,
+    ) -> None:
+        if action_id == ActionId.CANCEL:
+            return
+
+        current = self.git.detectBranch(project.path) or "…"
+
+        if action_id == ActionId.MERGE_BRING_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Bring Git into this computer?",
+                message=f"Merge origin/{compared} into {current} on this computer.",
+                confirm_label="Merge",
+                on_confirm=lambda: self._runMergeBring(project, compared),
+            )
+            return
+
+        if action_id == ActionId.MERGE_SEND_TO_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Send this computer into Git?",
+                message=(
+                    f"Merge {current} into {compared}, push to Git, "
+                    f"then return to {current} if possible."
+                ),
+                confirm_label="Merge and push",
+                on_confirm=lambda: self._runMergeSend(project, compared),
+            )
+            return
+
+        if action_id == ActionId.MATCH_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Make this computer match Git?",
+                message=(
+                    "This deletes local commits and uncommitted files on this computer. "
+                    "Git online is not changed."
+                ),
+                confirm_label="Match Git",
+                on_confirm=lambda: self._runMatchRemote(project),
+            )
+            return
+
+        if action_id == ActionId.OVERWRITE_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Overwrite remote?",
+                message=(
+                    "This force-pushes your local branch and can erase commits on the remote. "
+                    "Only continue if you are sure."
+                ),
+                confirm_label="Overwrite remote",
+                on_confirm=lambda: self._runOverwriteRemote(project),
+            )
+            return
+
+    def _runMergeBring(self, project: ProjectConfig, compared: str) -> None:
+        outcome = self.git.mergeBringRemote(project, compared)
+        if outcome.success:
+            Dialogs.showSnack(
+                self.page,
+                outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+            )
+            self.refreshAll()
+            return
+        Dialogs.showChoice(
+            self.page,
+            outcome,
+            lambda aid: self._onMergeFailureChoice(project, aid),
+        )
+        self.refreshAll()
+
+    def _runMergeSend(self, project: ProjectConfig, compared: str) -> None:
+        outcome = self.git.mergeSendToRemote(project, compared)
+        if outcome.success:
+            Dialogs.showSnack(
+                self.page,
+                outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+            )
+            try:
+                self.store.save()
+            except Exception:
+                pass
+            self.refreshAll()
+            return
+        Dialogs.showChoice(
+            self.page,
+            outcome,
+            lambda aid: self._onMergeFailureChoice(project, aid),
+        )
+        self.refreshAll()
+
+    def _runMatchRemote(self, project: ProjectConfig) -> None:
+        outcome = self.git.resetToRemote(project)
+        if outcome.success:
+            Dialogs.showSnack(self.page, outcome.title)
+            try:
+                self.store.save()
+            except Exception:
+                pass
+            self.refreshAll()
+            return
+        Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+
+    def _runOverwriteRemote(self, project: ProjectConfig) -> None:
+        outcome = self.git.push(project, force=True)
+        if outcome.success:
+            Dialogs.showSnack(
+                self.page,
+                outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+            )
+            self.refreshAll()
+            return
+        Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+
+    def _onMergeFailureChoice(self, project: ProjectConfig, action_id: ActionId) -> None:
+        if action_id == ActionId.VIEW_DIFFS:
+            self.on_open_project(project.id)
+            return
+        if action_id == ActionId.CANCEL:
+            return
+        if action_id == ActionId.OPEN_SETTINGS:
+            self.openAddProjectDialog(existing=project)
+            return
+        if action_id == ActionId.RETRY:
+            self.openMergeDialog(project.id)
+            return
 
     # --------------------------------------------------------
     # Method: openAddProjectDialog
