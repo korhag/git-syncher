@@ -138,3 +138,20 @@ class TestActionMapper:
         assert len(outcome.choices) >= 2
         assert any(c.id == ActionId.RETRY for c in outcome.choices)
         assert any(c.id == ActionId.CANCEL for c in outcome.choices)
+
+    # --------------------------------------------------------
+    # Method: testUnrelatedHistoriesLeadsWithMatchRemote
+    # --------------------------------------------------------
+    def testUnrelatedHistoriesLeadsWithMatchRemote(self) -> None:
+        outcome = ActionMapper.mapError(
+            "pull",
+            stderr="fatal: refusing to merge unrelated histories",
+        )
+        assert outcome.choices[0].id == ActionId.MATCH_REMOTE
+        assert outcome.choices[0].label == "Make this computer match Git"
+        assert outcome.choices[0].destructive is True
+        assert outcome.choices[0].requires_confirm is True
+        ids = [c.id for c in outcome.choices]
+        assert ActionId.OVERWRITE_REMOTE in ids
+        assert ActionId.CANCEL in ids
+        assert "Git online is not changed" in outcome.message or "take Git as-is" in outcome.message

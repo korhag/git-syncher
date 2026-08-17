@@ -16,6 +16,7 @@ class ActionId(str, Enum):
     OPEN_SETTINGS = "open_settings"
     VIEW_DIFFS = "view_diffs"
     DISCARD_THEN_PULL = "discard_then_pull"
+    MATCH_REMOTE = "match_remote"
     STASH_THEN_PULL = "stash_then_pull"
     PULL_FIRST = "pull_first"
     PULL_CURRENT_BRANCH = "pull_current_branch"
@@ -176,12 +177,28 @@ class ActionMapper:
 
         if cls._isUnrelatedHistories(combined):
             return ActionOutcome(
-                title="Unrelated histories",
-                message="Local and remote histories do not share a common ancestor.",
+                title="Histories do not match",
+                message=(
+                    "This computer and Git started from different histories. "
+                    "Pull cannot merge them. "
+                    "Next: throw away this computer’s copy and take Git as-is "
+                    "(Git online is not changed)."
+                ),
                 choices=[
+                    ActionChoice(
+                        ActionId.MATCH_REMOTE,
+                        "Make this computer match Git",
+                        description=(
+                            "Delete local commits and uncommitted files, "
+                            "then reset to the remote branch."
+                        ),
+                        destructive=True,
+                        requires_confirm=True,
+                    ),
                     ActionChoice(
                         ActionId.OVERWRITE_REMOTE,
                         "Overwrite remote (force push)",
+                        description="Replace Git online with this computer’s history.",
                         destructive=True,
                         requires_confirm=True,
                     ),

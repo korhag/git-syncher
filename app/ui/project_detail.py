@@ -232,9 +232,9 @@ class ProjectDetailView:
             if status.ahead and status.behind:
                 return (
                     "This computer and Git both have new commits — they differ. "
-                    "Compare, pull carefully, or overwrite remote."
+                    "Best next step: Make this computer match Git (throws away local commits)."
                 )
-            return "Conflicts or mixed state need a choice."
+            return "Conflicts or mixed state — make this computer match Git, or pick a file choice."
         if status.suggested_action == SuggestedAction.SYNCED:
             return "This computer and Git are in sync."
         if status.suggested_action == SuggestedAction.NOT_A_REPO:
@@ -321,19 +321,27 @@ class ProjectDetailView:
     def _openResolveHelp(self) -> None:
         outcome = ActionOutcome(
             title="Resolve differences",
-            message="Local and remote have different commits (or conflicts). Pick a safe path.",
+            message=(
+                "This computer and Git differ. "
+                "Next: make this computer match Git (recommended if you do not care about local commits), "
+                "or overwrite Git online."
+            ),
             choices=[
-                ActionChoice(ActionId.VIEW_DIFFS, "View local changes"),
-                ActionChoice(ActionId.PULL_FIRST, "Pull first"),
                 ActionChoice(
-                    ActionId.OVERWRITE_REMOTE,
-                    "Overwrite remote",
+                    ActionId.MATCH_REMOTE,
+                    "Make this computer match Git",
+                    description=(
+                        "Throw away local commits and files. "
+                        "Git online is not changed."
+                    ),
                     destructive=True,
                     requires_confirm=True,
                 ),
+                ActionChoice(ActionId.VIEW_DIFFS, "View local changes"),
+                ActionChoice(ActionId.PULL_FIRST, "Try pull first"),
                 ActionChoice(
-                    ActionId.DISCARD_THEN_PULL,
-                    "Discard local then pull",
+                    ActionId.OVERWRITE_REMOTE,
+                    "Overwrite remote",
                     destructive=True,
                     requires_confirm=True,
                 ),
@@ -538,6 +546,19 @@ class ProjectDetailView:
                 on_confirm=lambda: self._runDiscardThenPull(),
             )
             return
+        if action_id == ActionId.MATCH_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Make this computer match Git?",
+                message=(
+                    "This deletes local commits and uncommitted files on this computer. "
+                    "Git online is not changed. "
+                    "After this, this folder will be identical to the remote branch."
+                ),
+                confirm_label="Match Git",
+                on_confirm=lambda: self._runMatchRemote(),
+            )
+            return
         if action_id == ActionId.INIT_REPO:
             outcome = self.git.initRepo(project.path)
             self._handleOutcome(outcome)
@@ -552,6 +573,23 @@ class ProjectDetailView:
         outcome = self.git.discardThenPull(project)
         self._handleOutcome(outcome)
         if outcome.success:
+            self.reload(silent=True)
+
+    # --------------------------------------------------------
+    # Method: _runMatchRemote
+    # Purpose: Hard-reset this computer to origin (Git unchanged).
+    # --------------------------------------------------------
+    def _runMatchRemote(self) -> None:
+        project = self.project
+        if not project:
+            return
+        outcome = self.git.resetToRemote(project)
+        self._handleOutcome(outcome, retry=self._runMatchRemote)
+        if outcome.success:
+            try:
+                self.store.save()
+            except Exception:
+                pass
             self.reload(silent=True)
 
     # --------------------------------------------------------

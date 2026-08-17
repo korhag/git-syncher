@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from app.core.actions import ActionMapper, ActionOutcome
+from app.core.actions import ActionChoice, ActionId, ActionMapper, ActionOutcome
 from app.core.changelog import ChangelogParser
 from app.models.project import (
     FileChange,
@@ -488,6 +488,116 @@ class GitService:
         if not discard.success:
             return discard
         return self.pull(project)
+
+    # --------------------------------------------------------
+    # Method: resetToRemote
+    # Purpose: Make this computer identical to origin (Git unchanged).
+    #          Fetch, hard-reset to origin/<branch>, then clean.
+    # --------------------------------------------------------
+    def resetToRemote(self, project: ProjectConfig) -> ActionOutcome:
+        root = Path(project.path)
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=120,
+        )
+        if not fetch.ok:
+            return ActionMapper.mapError(
+                "fetch",
+                fetch.stderr,
+                fetch.stdout,
+                fetch.returncode,
+                local_branch=self.detectBranch(root),
+            )
+
+        remote_ref = self._resolveOriginBranch(root, project)
+        if not remote_ref:
+            return ActionOutcome(
+                title="Remote branch not found",
+                message=(
+                    "Could not find a branch on Git to match. "
+                    "Check the remote URL and default branch in project settings."
+                ),
+                choices=[
+                    ActionChoice(ActionId.OPEN_SETTINGS, "Open project settings"),
+                    ActionChoice(ActionId.CANCEL, "Cancel"),
+                ],
+                details=fetch.stdout + "\n" + fetch.stderr,
+            )
+
+        # Point local branch at the remote tip (does not change Git online).
+        branch_name = remote_ref.removeprefix("origin/")
+        checkout = self._run(["checkout", "-B", branch_name, remote_ref], cwd=root)
+        if not checkout.ok:
+            # Fallback: reset hard if already on a branch that can track the ref.
+            reset = self._run(["reset", "--hard", remote_ref], cwd=root)
+            if not reset.ok:
+                return ActionMapper.mapError(
+                    "reset",
+                    reset.stderr or checkout.stderr,
+                    reset.stdout or checkout.stdout,
+                    reset.returncode or checkout.returncode,
+                )
+        else:
+            reset = self._run(["reset", "--hard", remote_ref], cwd=root)
+            if not reset.ok:
+                return ActionMapper.mapError(
+                    "reset",
+                    reset.stderr,
+                    reset.stdout,
+                    reset.returncode,
+                )
+
+        clean = self._run(["clean", "-fd"], cwd=root)
+        if not clean.ok:
+            return ActionMapper.mapError(
+                "clean",
+                clean.stderr,
+                clean.stdout,
+                clean.returncode,
+            )
+
+        if project.default_branch != branch_name:
+            project.default_branch = branch_name
+
+        return ActionMapper.success(
+            "This computer now matches Git",
+            f"Reset to {remote_ref}",
+        )
+
+    # --------------------------------------------------------
+    # Method: _resolveOriginBranch
+    # Purpose: Pick origin/<branch> for hard reset (current, HEAD, master/main).
+    # --------------------------------------------------------
+    def _resolveOriginBranch(self, root: Path, project: ProjectConfig) -> str:
+        candidates: list[str] = []
+        current = self.detectBranch(root)
+        if current:
+            candidates.append(current)
+        if project.default_branch and project.default_branch not in candidates:
+            candidates.append(project.default_branch)
+        for name in ("master", "main"):
+            if name not in candidates:
+                candidates.append(name)
+
+        for name in candidates:
+            ref = f"origin/{name}"
+            check = self._run(["rev-parse", "--verify", ref], cwd=root)
+            if check.ok:
+                return ref
+
+        # Symbolic origin/HEAD -> origin/somebranch
+        head = self._run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd=root)
+        if head.ok:
+            ref_path = head.stdout.strip()
+            # e.g. refs/remotes/origin/master
+            if ref_path.startswith("refs/remotes/"):
+                short = ref_path[len("refs/remotes/") :]
+                check = self._run(["rev-parse", "--verify", short], cwd=root)
+                if check.ok:
+                    return short
+        return ""
 
     # --------------------------------------------------------
     # Method: resolveFileKeepLocal
