@@ -383,9 +383,19 @@ class DashboardView:
             password=True,
             can_reveal_password=True,
         )
-        branch_field = ft.TextField(
+        initial_branch = (existing.default_branch if existing else "") or ""
+        branch_options: list[ft.DropdownOption] = []
+        if initial_branch:
+            branch_options.append(
+                ft.DropdownOption(key=initial_branch, text=initial_branch)
+            )
+        branch_field = ft.Dropdown(
             label="Default branch",
-            value=existing.default_branch if existing else "main",
+            hint_text="Click refresh to load branches from Git",
+            value=initial_branch or None,
+            options=branch_options,
+            editable=True,
+            expand=True,
         )
         init_checkbox = ft.Checkbox(
             label="Initialize Git if folder is not a repository",
@@ -393,6 +403,20 @@ class DashboardView:
             visible=not editing,
         )
         error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+        def ensure_branch_option(name: str) -> None:
+            name = (name or "").strip()
+            if not name:
+                return
+            existing_keys = {
+                (opt.key or opt.text or "")
+                for opt in (branch_field.options or [])
+            }
+            if name not in existing_keys:
+                branch_field.options = list(branch_field.options or []) + [
+                    ft.DropdownOption(key=name, text=name)
+                ]
+            branch_field.value = name
 
         def pick_folder(_e: ft.ControlEvent) -> None:
             async def pick() -> None:
@@ -416,7 +440,7 @@ class DashboardView:
                     remote_field.value = self.git.detectRemoteUrl(selected) or remote_field.value
                     branch = self.git.detectBranch(selected)
                     if branch:
-                        branch_field.value = branch
+                        ensure_branch_option(branch)
                     uname, uemail = self.git.detectLocalUser(selected)
                     if uname and not user_field.value:
                         user_field.value = uname
@@ -429,6 +453,53 @@ class DashboardView:
                 self.page.update()
 
             self.page.run_task(pick)
+
+        def refresh_branches(_e: ft.ControlEvent) -> None:
+            path = (path_field.value or "").strip()
+            remote = (remote_field.value or "").strip()
+            if not path:
+                error_text.value = "Choose a folder first."
+                self.page.update()
+                return
+            if not remote:
+                error_text.value = "Enter a remote URL first."
+                self.page.update()
+                return
+
+            error_text.value = "Loading branches from Git…"
+            self.page.update()
+
+            temp = ProjectConfig(
+                id="temp-branch-list",
+                name="temp",
+                path=path,
+                remote_url=remote,
+                username=(user_field.value or "").strip(),
+                email=(email_field.value or "").strip(),
+                pat=(pat_field.value or "").strip(),
+            )
+            branches, remote_default, err = self.git.listRemoteBranches(temp)
+            if err:
+                error_text.value = err
+                self.page.update()
+                return
+            if not branches:
+                error_text.value = "No branches found on that remote."
+                self.page.update()
+                return
+
+            branch_field.options = [
+                ft.DropdownOption(key=name, text=name) for name in branches
+            ]
+            current = (branch_field.value or "").strip()
+            if current and current in branches:
+                branch_field.value = current
+            elif remote_default and remote_default in branches:
+                branch_field.value = remote_default
+            else:
+                branch_field.value = branches[0]
+            error_text.value = ""
+            self.page.update()
 
         def close() -> None:
             self.page.pop_dialog()
@@ -444,6 +515,11 @@ class DashboardView:
                 error_text.value = "Enter a display name."
                 self.page.update()
                 return
+            branch_value = (branch_field.value or "").strip()
+            if not branch_value:
+                error_text.value = "Pick a default branch (click refresh to load from Git)."
+                self.page.update()
+                return
 
             project = existing or ProjectConfig(
                 id=str(uuid.uuid4()),
@@ -456,7 +532,7 @@ class DashboardView:
             project.username = (user_field.value or "").strip()
             project.email = (email_field.value or "").strip()
             project.pat = (pat_field.value or "").strip()
-            project.default_branch = (branch_field.value or "main").strip() or "main"
+            project.default_branch = branch_value
 
             try:
                 if not self.git.isRepo(path):
@@ -518,7 +594,16 @@ class DashboardView:
                         user_field,
                         email_field,
                         pat_field,
-                        branch_field,
+                        ft.Row(
+                            [
+                                branch_field,
+                                ft.IconButton(
+                                    icon=ft.Icons.REFRESH,
+                                    tooltip="Load branches from Git",
+                                    on_click=refresh_branches,
+                                ),
+                            ]
+                        ),
                         init_checkbox,
                         error_text,
                     ],

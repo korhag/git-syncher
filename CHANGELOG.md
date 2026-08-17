@@ -5,6 +5,16 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-08-17
+
+### Added
+
+- Add/Edit project: **Refresh** next to Default branch loads real branch names from the Git remote (using the URL and PAT you entered) so you can pick instead of guessing `main`
+
+### Changed
+
+- New projects no longer prefill Default branch as `main`; click refresh to load branches from Git
+
 ## [1.4.0] - 2026-08-17
 
 ### Changed

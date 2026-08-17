@@ -165,6 +165,103 @@ class GitService:
         )
 
     # --------------------------------------------------------
+    # Method: listRemoteBranches
+    # Purpose: Read-only list of branch names on the Git remote.
+    # Output: (branches, default_branch, error_message)
+    # --------------------------------------------------------
+    def listRemoteBranches(
+        self,
+        project: ProjectConfig,
+    ) -> tuple[list[str], str, str]:
+        root = Path(project.path)
+        remote_url = (project.remote_url or "").strip()
+        if not remote_url:
+            return [], "", "Enter a remote URL first."
+        if not root.is_dir():
+            return [], "", "Choose a folder first."
+
+        # Always query the URL from settings (may differ from saved origin until Save).
+        heads = self._runWithAuth(
+            ["ls-remote", "--heads", remote_url],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not heads.ok:
+            message = (heads.stderr or heads.stdout or "Could not list remote branches").strip()
+            return [], "", message
+
+        branches = self.parseLsRemoteHeads(heads.stdout)
+        default_branch = self._detectDefaultFromLsRemote(root, project, remote_url)
+        if default_branch and default_branch not in branches:
+            default_branch = ""
+        if not default_branch and branches:
+            # Fallbacks when HEAD symref is unavailable.
+            for name in ("main", "master"):
+                if name in branches:
+                    default_branch = name
+                    break
+        return branches, default_branch, ""
+
+    # --------------------------------------------------------
+    # Method: parseLsRemoteHeads
+    # Purpose: Extract branch names from `git ls-remote --heads` stdout.
+    # --------------------------------------------------------
+    @staticmethod
+    def parseLsRemoteHeads(stdout: str) -> list[str]:
+        branches: list[str] = []
+        seen: set[str] = set()
+        prefix = "refs/heads/"
+        for line in (stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Format: <sha>\trefs/heads/<name>  (or spaces)
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            ref = parts[-1]
+            if not ref.startswith(prefix):
+                continue
+            name = ref[len(prefix) :]
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            branches.append(name)
+        return branches
+
+    # --------------------------------------------------------
+    # Method: _detectDefaultFromLsRemote
+    # Purpose: Resolve remote default branch via ls-remote --symref HEAD.
+    # --------------------------------------------------------
+    def _detectDefaultFromLsRemote(
+        self,
+        root: Path,
+        project: ProjectConfig,
+        target: str,
+    ) -> str:
+        result = self._runWithAuth(
+            ["ls-remote", "--symref", target, "HEAD"],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not result.ok:
+            return ""
+        for line in result.stdout.splitlines():
+            # ref: refs/heads/main\tHEAD
+            stripped = line.strip()
+            if not stripped.lower().startswith("ref:"):
+                continue
+            # ref: refs/heads/main HEAD
+            rest = stripped[4:].strip()
+            ref = rest.split()[0] if rest else ""
+            prefix = "refs/heads/"
+            if ref.startswith(prefix):
+                return ref[len(prefix) :]
+        return ""
+
+    # --------------------------------------------------------
     # Method: getStatus
     # Purpose: Build a full ProjectStatus for one project.
     # --------------------------------------------------------
