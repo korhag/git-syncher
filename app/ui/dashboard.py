@@ -6,7 +6,7 @@ from typing import Callable, Optional
 import flet as ft
 
 from app.core.git_service import GitService
-from app.core.os_open import openFolderInExplorer
+from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.restart import restartApp
 from app.core.store import VaultStore
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
@@ -245,6 +245,20 @@ class DashboardView:
                     error=True,
                 )
 
+        remote = ""
+        if status and status.remote_url:
+            remote = status.remote_url
+        elif project.remote_url:
+            remote = project.remote_url
+
+        def open_remote(_e: ft.ControlEvent, url: str = remote) -> None:
+            if not openRemoteInBrowser(url):
+                Dialogs.showSnack(
+                    self.page,
+                    "No remote URL set — open project settings and add the repo URL.",
+                    error=True,
+                )
+
         title_row_controls: list[ft.Control] = [
             ft.Text(project.name, size=15, weight=ft.FontWeight.W_600),
         ]
@@ -266,6 +280,14 @@ class DashboardView:
                     icon_size=18,
                     style=ft.ButtonStyle(padding=4),
                     on_click=open_folder,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.PUBLIC,
+                    tooltip="Open Git repo in browser",
+                    icon_size=18,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=open_remote,
+                    disabled=not bool(remote),
                 ),
                 ft.Container(
                     content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),

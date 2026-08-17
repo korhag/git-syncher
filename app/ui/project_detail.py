@@ -7,7 +7,7 @@ import flet as ft
 from app.core.actions import ActionChoice, ActionId, ActionOutcome
 from app.core.changelog import ChangelogParser
 from app.core.git_service import GitService
-from app.core.os_open import openFolderInExplorer
+from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.store import VaultStore
 from app.models.project import FileChangeKind, ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.dashboard import DashboardView, _ACTION_META
@@ -67,6 +67,11 @@ class ProjectDetailView:
                     icon=ft.Icons.FOLDER_OPEN,
                     tooltip="Open folder in Explorer",
                     on_click=lambda _e: self._openProjectFolder(),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.PUBLIC,
+                    tooltip="Open Git repo in browser",
+                    on_click=lambda _e: self._openProjectRemote(),
                 ),
                 ft.IconButton(
                     icon=ft.Icons.SETTINGS,
@@ -666,6 +671,22 @@ class ProjectDetailView:
             Dialogs.showSnack(
                 self.page,
                 "Could not open folder. Check that the path still exists.",
+                error=True,
+            )
+
+    def _openProjectRemote(self) -> None:
+        project = self.project
+        if not project:
+            return
+        remote = ""
+        if self.status and self.status.remote_url:
+            remote = self.status.remote_url
+        elif project.remote_url:
+            remote = project.remote_url
+        if not openRemoteInBrowser(remote):
+            Dialogs.showSnack(
+                self.page,
+                "No remote URL set — open project settings and add the repo URL.",
                 error=True,
             )
 
