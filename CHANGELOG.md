@@ -5,6 +5,17 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-08-17
+
+### Added
+
+- Vault saves write to a temp file then replace atomically, and keep `data/vault.enc.bak`
+- Unlock screen **Restore backup** when the vault is empty/damaged and a backup exists
+
+### Fixed
+
+- Empty or truncated `vault.enc` (e.g. after a crash mid-save) no longer shows a cryptic JSON error — clear recovery message instead
+
 ## [1.7.0] - 2026-08-17
 
 ### Added
