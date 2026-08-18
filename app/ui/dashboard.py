@@ -1024,20 +1024,45 @@ class DashboardView:
             visible=not editing,
         )
         error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+        applying_account = {"active": False}
+
+        def resolve_account(raw: str) -> Optional[VaultAccount]:
+            key = (raw or "").strip()
+            if not key:
+                return None
+            by_id = self.store.getAccount(key)
+            if by_id is not None:
+                return by_id
+            for account in self.store.accounts:
+                label = f"{account.label} ({account.username})"
+                if label == key or account.label == key:
+                    return account
+            return None
 
         def on_account_change(_e: ft.ControlEvent) -> None:
-            acc_id = (account_field.value or "").strip()
-            selected_account_id["value"] = acc_id
-            if not acc_id:
+            raw = (account_field.value or "").strip()
+            if not raw:
+                selected_account_id["value"] = ""
                 self.page.update()
                 return
-            account = self.store.getAccount(acc_id)
-            if account:
+            account = resolve_account(raw)
+            if account is None:
+                selected_account_id["value"] = ""
+                self.page.update()
+                return
+            selected_account_id["value"] = account.id
+            account_field.value = account.id
+            applying_account["active"] = True
+            try:
                 user_field.value = account.username
                 email_field.value = account.email
+            finally:
+                applying_account["active"] = False
             self.page.update()
 
         def on_identity_edit(_e: ft.ControlEvent) -> None:
+            if applying_account["active"]:
+                return
             acc_id = selected_account_id["value"]
             if not acc_id:
                 return
@@ -1069,6 +1094,20 @@ class DashboardView:
         def clear_note() -> None:
             error_text.color = ft.Colors.RED_400
             error_text.value = ""
+
+        def note_existing_if_any() -> None:
+            if editing:
+                return
+            path = (path_field.value or "").strip()
+            branch = (branch_field.value or "").strip()
+            if not path or not branch:
+                return
+            dup = self.store.findDuplicate(path, branch)
+            if dup is not None:
+                set_info(
+                    f"Already on the dashboard as “{dup.name}” for {branch}. "
+                    "Save will update that card."
+                )
 
         def ensure_branch_option(name: str) -> None:
             name = (name or "").strip()
@@ -1116,6 +1155,8 @@ class DashboardView:
                     init_checkbox.visible = False
                 else:
                     init_checkbox.visible = True
+                clear_note()
+                note_existing_if_any()
                 self.page.update()
 
             self.page.run_task(pick)
@@ -1182,6 +1223,7 @@ class DashboardView:
                     branch_field.value = remote_default
                 else:
                     branch_field.value = branches[0]
+                note_existing_if_any()
                 self.page.update()
 
             set_info("Loading branches from Git…")
@@ -1219,18 +1261,25 @@ class DashboardView:
                 branch_value,
                 exclude_id=existing.id if existing else None,
             )
-            if dup is not None:
-                set_error(
-                    f"This folder is already tracked for branch {branch_value}."
+            updating_existing = False
+            if editing:
+                if dup is not None:
+                    set_error(
+                        f"This folder is already tracked for branch {branch_value}."
+                    )
+                    self.page.update()
+                    return
+                project = existing
+            elif dup is not None:
+                # Same folder+branch already on the dashboard — update that card.
+                project = dup
+                updating_existing = True
+            else:
+                project = ProjectConfig(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    path=path,
                 )
-                self.page.update()
-                return
-
-            project = existing or ProjectConfig(
-                id=str(uuid.uuid4()),
-                name=name,
-                path=path,
-            )
             project.name = name
             project.path = path
             project.remote_url = (remote_field.value or "").strip()
@@ -1260,7 +1309,7 @@ class DashboardView:
 
                 self.git.applyLocalIdentity(path, project.username, project.email)
                 switch = self.git.checkoutSavedBranch(project)
-                if editing:
+                if editing or updating_existing:
                     self.store.updateProject(project)
                 else:
                     self.store.addProject(project)
@@ -1290,7 +1339,12 @@ class DashboardView:
                     return
 
                 close()
-                if switch.message and (
+                if updating_existing:
+                    Dialogs.showSnack(
+                        self.page,
+                        f"Updated existing project “{project.name}”",
+                    )
+                elif switch.message and (
                     switch.title.startswith("Switched")
                     or switch.title.startswith("Ready for first push")
                 ):
