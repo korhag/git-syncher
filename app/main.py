@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import os
+import sys
+import threading
+import time
+
 import flet as ft
 
+from app.core.debug_log import agentLog
 from app.core.git_service import GitService
 from app.core.instance_lock import (
     acquireAppLock,
@@ -43,7 +49,66 @@ class GitSyncherApp:
                 expand=True,
             )
         )
+        # #region agent log
+        agentLog(
+            "E",
+            "main.py:GitSyncherApp.__init__",
+            "app_init",
+            {
+                "pid": os.getpid(),
+                "executable": sys.executable,
+                "busy_visible": bool(self.busy.control.visible),
+            },
+        )
+        # #endregion
+        self._startDebugHeartbeat()
         self.showUnlock()
+
+    # --------------------------------------------------------
+    # Method: _startDebugHeartbeat
+    # Purpose: Log whether Python thread and Flet loop stay alive.
+    # --------------------------------------------------------
+    def _startDebugHeartbeat(self) -> None:
+        def thread_beat() -> None:
+            for i in range(40):
+                # #region agent log
+                agentLog(
+                    "D",
+                    "main.py:thread_beat",
+                    "os_thread_alive",
+                    {"i": i, "pid": os.getpid()},
+                )
+                # #endregion
+                time.sleep(0.5)
+
+        threading.Thread(target=thread_beat, daemon=True).start()
+
+        async def ui_beat() -> None:
+            for i in range(40):
+                # #region agent log
+                agentLog(
+                    "D",
+                    "main.py:ui_beat",
+                    "flet_loop_alive",
+                    {"i": i, "pid": os.getpid()},
+                )
+                # #endregion
+                await asyncio.sleep(0.5)
+
+        import asyncio
+
+        try:
+            self.page.run_task(ui_beat)
+        except Exception as exc:
+            # #region agent log
+            agentLog(
+                "D",
+                "main.py:ui_beat",
+                "ui_beat_failed",
+                {"err": type(exc).__name__},
+            )
+            # #endregion
+            pass
 
     # --------------------------------------------------------
     # Method: _configurePage
@@ -91,6 +156,14 @@ class GitSyncherApp:
         )
         self.root_content.content = view.build()
         self.page.update()
+        # #region agent log
+        agentLog(
+            "A",
+            "main.py:showUnlock",
+            "unlock_shown",
+            {"pid": os.getpid(), "busy_visible": bool(self.busy.control.visible)},
+        )
+        # #endregion
 
     # --------------------------------------------------------
     # Method: showDashboard
@@ -157,9 +230,33 @@ def main(page: ft.Page) -> None:
 # Script entry: python -m app.main
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    if not acquireAppLock():
+    # #region agent log
+    agentLog(
+        "C",
+        "main.py:__main__",
+        "entry",
+        {
+            "pid": os.getpid(),
+            "executable": sys.executable,
+            "argv": sys.argv[:4],
+        },
+    )
+    # #endregion
+    got_lock = acquireAppLock()
+    # #region agent log
+    agentLog(
+        "C",
+        "main.py:__main__",
+        "lock_result",
+        {"pid": os.getpid(), "got_lock": got_lock},
+    )
+    # #endregion
+    if not got_lock:
         showAlreadyRunningAndExit()
     try:
         ft.run(main)
     finally:
+        # #region agent log
+        agentLog("C", "main.py:__main__", "finally_release", {"pid": os.getpid()})
+        # #endregion
         releaseAppLock()

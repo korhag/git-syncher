@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.crypto import VaultCrypto
+from app.models.account import VaultAccount
 from app.models.project import ProjectConfig
+
+VAULT_VERSION = 2
 
 
 # Shown when vault.enc is empty or not valid JSON (not a wrong password).
@@ -41,6 +44,7 @@ class VaultStore:
         self.vault_path = vault_path or (root / "data" / "vault.enc")
         self.crypto: Optional[VaultCrypto] = None
         self.projects: list[ProjectConfig] = []
+        self.accounts: list[VaultAccount] = []
         self._fingerprint: str = ""
 
     # --------------------------------------------------------
@@ -110,6 +114,7 @@ class VaultStore:
         self.crypto.unlock(password)
         self._fingerprint = VaultCrypto.passwordFingerprint(password, self.crypto.salt)
         self.projects = []
+        self.accounts = []
         self.save()
 
     # --------------------------------------------------------
@@ -148,7 +153,14 @@ class VaultStore:
             raise VaultDamagedError(VAULT_DAMAGED_MESSAGE) from exc
         self.crypto = crypto
         self._fingerprint = expected
+        version = int(data.get("version", 1))
         self.projects = [ProjectConfig.fromDict(item) for item in data.get("projects", [])]
+        if version >= 2:
+            self.accounts = [
+                VaultAccount.fromDict(item) for item in data.get("accounts", [])
+            ]
+        else:
+            self.accounts = []
         return True
 
     # --------------------------------------------------------
@@ -175,7 +187,8 @@ class VaultStore:
         if self.crypto is None or not self.crypto.isUnlocked():
             raise RuntimeError("Cannot save: vault is locked.")
         payload = {
-            "version": 1,
+            "version": VAULT_VERSION,
+            "accounts": [account.toDict() for account in self.accounts],
             "projects": [project.toDict() for project in self.projects],
         }
         plaintext = json.dumps(payload, indent=2).encode("utf-8")
@@ -225,6 +238,7 @@ class VaultStore:
         if self.crypto is not None:
             self.crypto.lock()
         self.projects = []
+        self.accounts = []
         self._fingerprint = ""
 
     # --------------------------------------------------------
@@ -349,5 +363,100 @@ class VaultStore:
         for project in self.projects:
             if project.id == project_id:
                 return project
+        return None
+
+    # --------------------------------------------------------
+    # Method: normalizeAccountLabel
+    # Purpose: Trim and lowercase for duplicate label checks.
+    # --------------------------------------------------------
+    @staticmethod
+    def normalizeAccountLabel(label: str) -> str:
+        return (label or "").strip().casefold()
+
+    # --------------------------------------------------------
+    # Method: validateAccountFields
+    # Purpose: Ensure label, username, and email are non-empty.
+    # --------------------------------------------------------
+    @staticmethod
+    def validateAccountFields(label: str, username: str, email: str) -> None:
+        if not (label or "").strip():
+            raise ValueError("Enter an account label.")
+        if not (username or "").strip():
+            raise ValueError("Enter a Git username.")
+        if not (email or "").strip():
+            raise ValueError("Enter a Git email.")
+
+    # --------------------------------------------------------
+    # Method: findAccountByLabel
+    # Purpose: Existing account with same label (case-insensitive).
+    # --------------------------------------------------------
+    def findAccountByLabel(
+        self,
+        label: str,
+        exclude_id: Optional[str] = None,
+    ) -> Optional[VaultAccount]:
+        key = self.normalizeAccountLabel(label)
+        if not key:
+            return None
+        for account in self.accounts:
+            if exclude_id and account.id == exclude_id:
+                continue
+            if self.normalizeAccountLabel(account.label) == key:
+                return account
+        return None
+
+    # --------------------------------------------------------
+    # Method: addAccount
+    # Purpose: Append a saved Git identity and persist the vault.
+    # --------------------------------------------------------
+    def addAccount(self, account: VaultAccount) -> VaultAccount:
+        self.validateAccountFields(account.label, account.username, account.email)
+        if not account.id:
+            account.id = str(uuid.uuid4())
+        dup = self.findAccountByLabel(account.label)
+        if dup is not None:
+            raise ValueError(f"An account named “{account.label.strip()}” already exists.")
+        account.label = account.label.strip()
+        account.username = account.username.strip()
+        account.email = account.email.strip()
+        self.accounts.append(account)
+        self.save()
+        return account
+
+    # --------------------------------------------------------
+    # Method: updateAccount
+    # Purpose: Replace a saved account by id and persist.
+    # --------------------------------------------------------
+    def updateAccount(self, account: VaultAccount) -> None:
+        self.validateAccountFields(account.label, account.username, account.email)
+        dup = self.findAccountByLabel(account.label, exclude_id=account.id)
+        if dup is not None:
+            raise ValueError(f"An account named “{account.label.strip()}” already exists.")
+        account.label = account.label.strip()
+        account.username = account.username.strip()
+        account.email = account.email.strip()
+        for index, existing in enumerate(self.accounts):
+            if existing.id == account.id:
+                self.accounts[index] = account
+                self.save()
+                return
+        raise KeyError(f"Account not found: {account.id}")
+
+    # --------------------------------------------------------
+    # Method: removeAccount
+    # Purpose: Delete a saved account by id and persist.
+    # --------------------------------------------------------
+    def removeAccount(self, account_id: str) -> None:
+        self.accounts = [a for a in self.accounts if a.id != account_id]
+        self.save()
+
+    # --------------------------------------------------------
+    # Method: getAccount
+    # Purpose: Look up a saved account by id.
+    # --------------------------------------------------------
+    def getAccount(self, account_id: str) -> Optional[VaultAccount]:
+        for account in self.accounts:
+            if account.id == account_id:
+                return account
         return None
 

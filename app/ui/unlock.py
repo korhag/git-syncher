@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 import flet as ft
 
+from app import __version__
+from app.core.debug_log import agentLog
 from app.core.store import VAULT_DAMAGED_MESSAGE, VaultDamagedError, VaultStore
 from app.ui.dialogs import Dialogs
 
@@ -127,6 +130,31 @@ class UnlockView:
         )
         confirm_field.on_submit = password_field.on_submit
         primary_button.on_click = password_field.on_submit
+
+        def on_password_change(_e: ft.ControlEvent) -> None:
+            # #region agent log
+            agentLog(
+                "A",
+                "unlock.py:password_change",
+                "password_field_event",
+                {"pid": os.getpid()},
+            )
+            # #endregion
+
+        password_field.on_change = on_password_change
+
+        def on_unlock_click(e: ft.ControlEvent) -> None:
+            # #region agent log
+            agentLog(
+                "A",
+                "unlock.py:unlock_click",
+                "unlock_button_clicked",
+                {"pid": os.getpid()},
+            )
+            # #endregion
+            password_field.on_submit(e)
+
+        primary_button.on_click = on_unlock_click
         restore_button.on_click = lambda _e: self._restoreBackup(
             password_field,
             error_text,
@@ -145,56 +173,86 @@ class UnlockView:
 
         refresh_recovery()
 
-        git_banner: ft.Control
-        if self.git_available:
-            git_banner = ft.Text(
-                self.git_version or "Git is available",
-                size=12,
-                color=ft.Colors.ON_SURFACE_VARIANT,
-            )
-        else:
-            git_banner = ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.AMBER),
-                        ft.Text(
-                            "Git was not found. Install Git and restart the app.",
-                            color=ft.Colors.AMBER,
-                            expand=True,
+        form_controls: list[ft.Control] = [
+            ft.Icon(ft.Icons.SYNC, size=56, color=ft.Colors.PRIMARY),
+            ft.Text("Git Syncher", size=28, weight=ft.FontWeight.BOLD),
+            title_text,
+            subtitle_text,
+            ft.Container(height=8),
+            password_field,
+            confirm_field,
+            error_text,
+            primary_button,
+            restore_button,
+            start_over_button,
+        ]
+        # Keep git-missing warning; do not use git version as the app footer.
+        if not self.git_available:
+            form_controls.extend(
+                [
+                    ft.Container(height=16),
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.AMBER),
+                                ft.Text(
+                                    "Git was not found. Install Git and restart the app.",
+                                    color=ft.Colors.AMBER,
+                                    expand=True,
+                                ),
+                            ]
                         ),
-                    ]
-                ),
-                bgcolor=ft.Colors.AMBER_900,
-                padding=12,
-                border_radius=8,
-                width=400,
+                        bgcolor=ft.Colors.AMBER_900,
+                        padding=12,
+                        border_radius=8,
+                        width=400,
+                    ),
+                ]
             )
 
         # Keep switch_to_create / show_recovery for handlers via closure attrs.
         self._switch_to_create = switch_to_create
         self._show_recovery_after_damage = show_recovery_after_damage
 
-        return ft.Container(
+        form = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
             content=ft.Column(
-                [
-                    ft.Icon(ft.Icons.SYNC, size=56, color=ft.Colors.PRIMARY),
-                    ft.Text("Git Syncher", size=28, weight=ft.FontWeight.BOLD),
-                    title_text,
-                    subtitle_text,
-                    ft.Container(height=8),
-                    password_field,
-                    confirm_field,
-                    error_text,
-                    primary_button,
-                    restore_button,
-                    start_over_button,
-                    ft.Container(height=16),
-                    git_banner,
-                ],
+                form_controls,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 tight=True,
+            ),
+        )
+        footer = ft.Row(
+            [
+                ft.Container(expand=True),
+                ft.Text(
+                    f"v{__version__}",
+                    size=11,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.END,
+        )
+        # #region agent log
+        agentLog(
+            "A",
+            "unlock.py:build",
+            "unlock_stack_built",
+            {
+                "footer_expand": False,
+                "layout": "column",
+                "busy_not_in_view": True,
+                "pid": os.getpid(),
+            },
+        )
+        # #endregion
+        return ft.Container(
+            expand=True,
+            padding=20,
+            content=ft.Column(
+                [form, footer],
+                expand=True,
             ),
         )
 

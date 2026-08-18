@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 import flet as ft
 
 from app.core.instance_lock import releaseAppLock
+
+# Survive parent exit without CREATE_NO_WINDOW (that freezes Flet GUI).
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 # ------------------------------------------------------------
@@ -19,47 +24,119 @@ def projectRoot() -> Path:
 
 
 # ------------------------------------------------------------
+# Function: _scheduleHardExit
+# Purpose: Daemon thread sleeps briefly then os._exit (safety net).
+# ------------------------------------------------------------
+def _scheduleHardExit(delay_seconds: float = 1.0) -> None:
+    def hard_exit() -> None:
+        time.sleep(delay_seconds)
+        # #region agent log
+        from app.core.debug_log import agentLog
+
+        agentLog(
+            "C",
+            "restart.py:_scheduleHardExit",
+            "about_to_os_exit",
+            {"delay": delay_seconds, "pid": os.getpid()},
+        )
+        # #endregion
+        os._exit(0)
+
+    threading.Thread(target=hard_exit, daemon=True).start()
+
+
+# ------------------------------------------------------------
+# Function: _windowsPython
+# Purpose: Prefer pythonw.exe (no console); else python.exe.
+# ------------------------------------------------------------
+def _windowsPython(root: Path) -> Optional[Path]:
+    pythonw = root / ".venv" / "Scripts" / "pythonw.exe"
+    if pythonw.is_file():
+        return pythonw
+    python = root / ".venv" / "Scripts" / "python.exe"
+    if python.is_file():
+        return python
+    return None
+
+
+# ------------------------------------------------------------
+# Function: _spawnWindows
+# Purpose: Start Git Syncher via venv pythonw/python (no cmd console).
+# ------------------------------------------------------------
+def _spawnWindows(root: Path) -> bool:
+    python = _windowsPython(root)
+    if python is None:
+        return False
+    # CREATE_NEW_PROCESS_GROUP only — CREATE_NO_WINDOW freezes Flet.
+    subprocess.Popen(
+        [str(python), "-m", "app.main"],
+        cwd=str(root),
+        creationflags=_CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+    return True
+
+
+# ------------------------------------------------------------
+# Function: _spawnUnix
+# Purpose: Start a new Git Syncher process detached from this session.
+# ------------------------------------------------------------
+def _spawnUnix(root: Path) -> bool:
+    venv_python = root / ".venv" / "bin" / "python"
+    if not venv_python.is_file():
+        return False
+    subprocess.Popen(
+        [str(venv_python), "-m", "app.main"],
+        cwd=str(root),
+        start_new_session=True,
+        close_fds=True,
+    )
+    return True
+
+
+# ------------------------------------------------------------
 # Function: restartApp
-# Purpose: Launch run.bat (Windows) or run.sh (Unix), then exit this process.
-# Input: page (optional) - Flet page to close before exit.
-# Output: bool - False if the launch script is missing.
+# Purpose: Launch a new instance, hide this window, then hard-exit.
+# Input: page (optional) - Flet page to hide before exit.
+# Output: bool - False if no venv interpreter found.
 # ------------------------------------------------------------
 def restartApp(page: Optional[ft.Page] = None) -> bool:
     root = projectRoot()
     if os.name == "nt":
-        script = root / "run.bat"
-        if not script.is_file():
-            return False
+        can_launch = _windowsPython(root) is not None
     else:
-        script = root / "run.sh"
-        if not script.is_file():
-            return False
+        can_launch = (root / ".venv" / "bin" / "python").is_file()
+    if not can_launch:
+        return False
 
     # Drop single-instance lock before spawn so the new process can acquire it.
     releaseAppLock()
+    # #region agent log
+    from app.core.debug_log import agentLog
+
+    agentLog(
+        "C",
+        "restart.py:restartApp",
+        "restart_spawn",
+        {"pid": os.getpid(), "nt": os.name == "nt"},
+    )
+    # #endregion
 
     if os.name == "nt":
-        # New console so the restarted app survives after this process exits.
-        subprocess.Popen(
-            ["cmd.exe", "/c", str(script)],
-            cwd=str(root),
-            creationflags=subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
-        )
+        if not _spawnWindows(root):
+            return False
     else:
-        subprocess.Popen(
-            ["bash", str(script)],
-            cwd=str(root),
-            start_new_session=True,
-            close_fds=True,
-        )
+        if not _spawnUnix(root):
+            return False
+
+    # Delayed hard-exit after child has time to take the lock and paint.
+    _scheduleHardExit(1.0)
 
     if page is not None:
         try:
-            page.window.close()
+            page.window.visible = False
+            page.update()
         except Exception:
             pass
 
-    # Hard exit so Flet / threads do not keep the old instance alive.
-    os._exit(0)
-    return True  # unreachable; keeps type checkers calm
+    return True

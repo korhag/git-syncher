@@ -5,6 +5,43 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.4] - 2026-08-18
+
+### Fixed
+
+- Unlock vault accepts typing and clicks again (version footer no longer covers the form)
+- A second launch no longer starts another Flet window that froze the first Unlock screen
+
+## [1.11.3] - 2026-08-18
+
+### Fixed
+
+- Unlock no longer freezes after Restart (new instance launches with pythonw, not CREATE_NO_WINDOW)
+- Restart / run.bat no longer leave an empty command prompt open
+
+## [1.11.2] - 2026-08-18
+
+### Added
+
+- Unlock screen footer shows the app version (e.g. v1.11.2)
+
+### Fixed
+
+- Restart no longer leaves the old window open or opens an extra command prompt
+
+## [1.11.1] - 2026-08-18
+
+### Fixed
+
+- Restart closes the current window after launching the new instance (no leftover dialog or old process)
+
+## [1.11.0] - 2026-08-18
+
+### Added
+
+- Saved **Git accounts** in the vault (label, username, email) — manage them from the dashboard **Accounts** button
+- **Git account** picker in Add/Edit project autofills username and email from a saved identity
+
 ## [1.10.1] - 2026-08-18
 
 ### Added

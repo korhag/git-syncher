@@ -10,4 +10,9 @@ if not exist ".venv\Scripts\python.exe" (
   echo.
 )
 
-".venv\Scripts\python.exe" -m app.main
+if exist ".venv\Scripts\pythonw.exe" (
+  start "" "%~dp0.venv\Scripts\pythonw.exe" -m app.main
+) else (
+  start "" "%~dp0.venv\Scripts\python.exe" -m app.main
+)
+exit /b 0

@@ -163,45 +163,27 @@ def releaseAppLock() -> None:
 
 # ------------------------------------------------------------
 # Function: showAlreadyRunningAndExit
-# Purpose: Minimal Flet dialog, then hard-exit this process.
+# Purpose: Exit immediately if another Git Syncher already holds the lock.
+#          Must not call ft.run() — a second Flet window freezes the first.
 # ------------------------------------------------------------
 def showAlreadyRunningAndExit() -> None:
-    import flet as ft
+    # Do not start a second Flet window — that freezes the instance that
+    # already holds the lock (pythonw UI + python.exe "Already running").
+    # #region agent log
+    from app.core.debug_log import agentLog
 
-    def ui(page: ft.Page) -> None:
-        page.title = "Git Syncher"
-        page.theme_mode = ft.ThemeMode.DARK
-        page.window.width = 420
-        page.window.height = 200
-        page.window.resizable = False
-
-        def close_app(_e: ft.ControlEvent) -> None:
-            try:
-                page.window.close()
-            except Exception:
-                pass
-            os._exit(0)
-
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Already running"),
-            content=ft.Text(
-                "Git Syncher is already running. Close that window first."
-            ),
-            actions=[
-                ft.FilledButton("OK", on_click=close_app),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.overlay.append(dialog)
-        dialog.open = True
-        page.update()
-
+    agentLog(
+        "C",
+        "instance_lock.py:showAlreadyRunningAndExit",
+        "duplicate_exit_no_flet",
+        {"pid": os.getpid()},
+    )
+    # #endregion
     try:
-        ft.run(ui)
-    except Exception:
         print(
             "Git Syncher is already running. Close that window first.",
             file=sys.stderr,
         )
+    except Exception:
+        pass
     os._exit(0)

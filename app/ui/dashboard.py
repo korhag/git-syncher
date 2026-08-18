@@ -10,6 +10,7 @@ from app.core.git_service import GitService
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.restart import restartApp
 from app.core.store import VaultStore
+from app.models.account import VaultAccount
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.busy import BusyOverlay
 from app.ui.dialogs import Dialogs
@@ -81,6 +82,11 @@ class DashboardView:
                     [
                         self.status_text,
                         self.refresh_button,
+                        ft.OutlinedButton(
+                            "Accounts",
+                            icon=ft.Icons.PERSON,
+                            on_click=lambda _e: self.openManageAccountsDialog(),
+                        ),
                         ft.OutlinedButton(
                             "Add project",
                             icon=ft.Icons.ADD,
@@ -702,6 +708,204 @@ class DashboardView:
             return
 
     # --------------------------------------------------------
+    # Method: openManageAccountsDialog
+    # Purpose: List, add, edit, and remove saved Git identities.
+    # --------------------------------------------------------
+    def openManageAccountsDialog(self) -> None:
+        list_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, height=280)
+        empty_hint = ft.Text(
+            "No saved accounts yet. Add one to autofill Git username and email "
+            "when creating projects.",
+            size=13,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+        )
+
+        def rebuild_list() -> None:
+            list_column.controls.clear()
+            if not self.store.accounts:
+                list_column.controls.append(empty_hint)
+                return
+            for account in self.store.accounts:
+                def edit_account(
+                    _e: ft.ControlEvent,
+                    acc: VaultAccount = account,
+                ) -> None:
+                    open_account_form(acc)
+
+                def remove_account(
+                    _e: ft.ControlEvent,
+                    acc: VaultAccount = account,
+                ) -> None:
+                    def confirm() -> None:
+                        self.store.removeAccount(acc.id)
+                        Dialogs.showSnack(self.page, f"Removed account “{acc.label}”")
+                        rebuild_list()
+                        self.page.update()
+
+                    Dialogs.showYesNo(
+                        self.page,
+                        title="Remove account?",
+                        message=(
+                            f"Remove “{acc.label}” from saved Git accounts?\n"
+                            "Existing projects keep their username and email."
+                        ),
+                        confirm_label="Remove",
+                        on_confirm=confirm,
+                    )
+
+                list_column.controls.append(
+                    ft.Container(
+                        padding=10,
+                        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                        border_radius=8,
+                        content=ft.Row(
+                            [
+                                ft.Column(
+                                    [
+                                        ft.Text(
+                                            account.label,
+                                            weight=ft.FontWeight.W_600,
+                                            size=14,
+                                        ),
+                                        ft.Text(
+                                            f"{account.username} · {account.email}",
+                                            size=12,
+                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.EDIT,
+                                    tooltip="Edit account",
+                                    on_click=edit_account,
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.DELETE_OUTLINE,
+                                    tooltip="Remove account",
+                                    on_click=remove_account,
+                                ),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+        def open_account_form(existing: Optional[VaultAccount] = None) -> None:
+            editing = existing is not None
+            label_field = ft.TextField(
+                label="Label",
+                value=existing.label if existing else "",
+                hint_text="e.g. Work GitHub",
+            )
+            user_field = ft.TextField(
+                label="Git username",
+                value=existing.username if existing else "",
+            )
+            email_field = ft.TextField(
+                label="Git email",
+                value=existing.email if existing else "",
+            )
+            form_error = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+            def close_form() -> None:
+                self.page.pop_dialog()
+
+            def save_account(_e: ft.ControlEvent) -> None:
+                label = (label_field.value or "").strip()
+                username = (user_field.value or "").strip()
+                email = (email_field.value or "").strip()
+                try:
+                    if editing and existing is not None:
+                        account = VaultAccount(
+                            id=existing.id,
+                            label=label,
+                            username=username,
+                            email=email,
+                        )
+                        self.store.updateAccount(account)
+                        Dialogs.showSnack(self.page, "Account updated")
+                    else:
+                        account = VaultAccount(
+                            id=str(uuid.uuid4()),
+                            label=label,
+                            username=username,
+                            email=email,
+                        )
+                        self.store.addAccount(account)
+                        Dialogs.showSnack(self.page, "Account added")
+                except ValueError as exc:
+                    form_error.value = str(exc)
+                    self.page.update()
+                    return
+                except KeyError as exc:
+                    form_error.value = str(exc)
+                    self.page.update()
+                    return
+
+                close_form()
+                rebuild_list()
+                self.page.update()
+
+            form_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Edit account" if editing else "Add account"),
+                content=ft.Container(
+                    width=400,
+                    content=ft.Column(
+                        [label_field, user_field, email_field, form_error],
+                        tight=True,
+                        spacing=10,
+                    ),
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=lambda _e: close_form()),
+                    ft.FilledButton(
+                        "Save",
+                        on_click=save_account,
+                    ),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            self.page.show_dialog(form_dialog)
+
+        def close() -> None:
+            self.page.pop_dialog()
+
+        rebuild_list()
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Git accounts"),
+            content=ft.Container(
+                width=480,
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Saved identities autofill Git username and email "
+                            "when you add or edit a project.",
+                            size=13,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                        ),
+                        list_column,
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Close", on_click=lambda _e: close()),
+                ft.OutlinedButton(
+                    "Add account",
+                    icon=ft.Icons.ADD,
+                    on_click=lambda _e: open_account_form(),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.show_dialog(dialog)
+
+    # --------------------------------------------------------
     # Method: openAddProjectDialog
     # Purpose: Folder picker + Git settings form.
     # --------------------------------------------------------
@@ -717,6 +921,42 @@ class DashboardView:
         remote_field = ft.TextField(
             label="Remote URL (HTTPS)",
             value=existing.remote_url if existing else "",
+        )
+
+        def build_account_options() -> list[ft.DropdownOption]:
+            options: list[ft.DropdownOption] = [
+                ft.DropdownOption(key="", text="(Manual)")
+            ]
+            for account in self.store.accounts:
+                options.append(
+                    ft.DropdownOption(
+                        key=account.id,
+                        text=f"{account.label} ({account.username})",
+                    )
+                )
+            return options
+
+        def find_matching_account_id(username: str, email: str) -> str:
+            user = (username or "").strip()
+            mail = (email or "").strip()
+            for account in self.store.accounts:
+                if account.username == user and account.email == mail:
+                    return account.id
+            return ""
+
+        initial_account_id = ""
+        if existing:
+            initial_account_id = find_matching_account_id(
+                existing.username,
+                existing.email,
+            )
+
+        selected_account_id = {"value": initial_account_id}
+        account_field = ft.Dropdown(
+            label="Git account",
+            hint_text="Pick a saved identity or enter details manually",
+            value=initial_account_id or None,
+            options=build_account_options(),
         )
         user_field = ft.TextField(
             label="Git username",
@@ -757,6 +997,39 @@ class DashboardView:
             visible=not editing,
         )
         error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+        def on_account_change(_e: ft.ControlEvent) -> None:
+            acc_id = (account_field.value or "").strip()
+            selected_account_id["value"] = acc_id
+            if not acc_id:
+                self.page.update()
+                return
+            account = self.store.getAccount(acc_id)
+            if account:
+                user_field.value = account.username
+                email_field.value = account.email
+            self.page.update()
+
+        def on_identity_edit(_e: ft.ControlEvent) -> None:
+            acc_id = selected_account_id["value"]
+            if not acc_id:
+                return
+            account = self.store.getAccount(acc_id)
+            if not account:
+                selected_account_id["value"] = ""
+                account_field.value = None
+                self.page.update()
+                return
+            current_user = (user_field.value or "").strip()
+            current_email = (email_field.value or "").strip()
+            if current_user != account.username or current_email != account.email:
+                selected_account_id["value"] = ""
+                account_field.value = None
+                self.page.update()
+
+        account_field.on_change = on_account_change
+        user_field.on_change = on_identity_edit
+        email_field.on_change = on_identity_edit
 
         def set_error(message: str) -> None:
             error_text.color = ft.Colors.RED_400
@@ -1032,6 +1305,7 @@ class DashboardView:
                             ]
                         ),
                         remote_field,
+                        account_field,
                         user_field,
                         email_field,
                         pat_field,
