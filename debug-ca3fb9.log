@@ -89,3 +89,7 @@
 {"sessionId": "ca3fb9", "timestamp": 1787047612271, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Refreshing\u2026"}, "pid": 50492}
 {"sessionId": "ca3fb9", "timestamp": 1787047932570, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Refreshing\u2026"}, "pid": 50492}
 {"sessionId": "ca3fb9", "timestamp": 1787047962216, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Committing\u2026"}, "pid": 50492}
+{"sessionId": "ca3fb9", "timestamp": 1787047962519, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Refreshing\u2026"}, "pid": 50492}
+{"sessionId": "ca3fb9", "timestamp": 1787047987630, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Pushing\u2026"}, "pid": 50492}
+{"sessionId": "ca3fb9", "timestamp": 1787047989336, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Refreshing\u2026"}, "pid": 50492}
+{"sessionId": "ca3fb9", "timestamp": 1787047998806, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Committing\u2026"}, "pid": 50492}
