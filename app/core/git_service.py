@@ -152,6 +152,42 @@ class GitService:
         return result.stdout.strip() if result.ok else ""
 
     # --------------------------------------------------------
+    # Method: detectInitDefaultBranch
+    # Purpose: Git’s init.defaultBranch (usually main), else main.
+    # --------------------------------------------------------
+    def detectInitDefaultBranch(self, path: str | Path | None = None) -> str:
+        cwd = Path(path) if path else None
+        result = self._run(["config", "--get", "init.defaultBranch"], cwd=cwd)
+        name = result.stdout.strip() if result.ok else ""
+        return name or "main"
+
+    # --------------------------------------------------------
+    # Method: suggestBranchNames
+    # Purpose: Branch names to offer when the remote is empty.
+    # Output: Ordered unique list (local, init default, main, master).
+    # --------------------------------------------------------
+    def suggestBranchNames(self, path: str | Path = "") -> list[str]:
+        names: list[str] = []
+        local = self.detectBranch(path) if path else ""
+        init_default = self.detectInitDefaultBranch(path or None)
+        for name in (local, init_default, "main", "master"):
+            cleaned = (name or "").strip()
+            if cleaned and cleaned not in names:
+                names.append(cleaned)
+        return names or ["main"]
+
+    # --------------------------------------------------------
+    # Method: resolveBranchForSave
+    # Purpose: Branch to store when the user left Default branch blank.
+    # --------------------------------------------------------
+    def resolveBranchForSave(self, path: str | Path, preferred: str = "") -> str:
+        preferred = (preferred or "").strip()
+        if preferred:
+            return preferred
+        suggestions = self.suggestBranchNames(path)
+        return suggestions[0] if suggestions else "main"
+
+    # --------------------------------------------------------
     # Method: detectLocalUser
     # Purpose: Read local or global user.name / user.email.
     # --------------------------------------------------------
@@ -463,6 +499,7 @@ class GitService:
     # --------------------------------------------------------
     # Method: checkoutSavedBranch
     # Purpose: Switch this folder to project.default_branch (origin tip).
+    #          Empty remotes: rename/create the local branch for first push.
     # --------------------------------------------------------
     def checkoutSavedBranch(self, project: ProjectConfig) -> ActionOutcome:
         root = Path(project.path)
@@ -471,10 +508,7 @@ class GitService:
             return ActionMapper.success("No branch selected", "")
 
         current = self.detectBranch(root)
-        if current == target:
-            return ActionMapper.success("Already on branch", target)
-
-        if self.listChanges(root):
+        if current != target and self.listChanges(root):
             return ActionOutcome(
                 title="Cannot switch branch",
                 message=(
@@ -491,25 +525,39 @@ class GitService:
             project=project,
             timeout=60,
         )
-        if not fetch.ok:
-            return ActionMapper.mapError(
-                "fetch",
-                fetch.stderr,
-                fetch.stdout,
-                fetch.returncode,
-            )
-
         remote_ref = f"origin/{target}"
         remote_ok = self._run(["rev-parse", "--verify", remote_ref], cwd=root)
+
+        if current == target:
+            if remote_ok.ok:
+                return ActionMapper.success("Already on branch", target)
+            return ActionMapper.success(
+                "Ready for first push",
+                f"Remote has no {target} yet — Push will create it.",
+            )
+
         if not remote_ok.ok:
-            return ActionOutcome(
-                title="Remote branch not found",
-                message=(
-                    f"Git does not have origin/{target}. "
-                    "Pick a branch that exists on the remote (click refresh in settings)."
-                ),
-                choices=[],
-                details=remote_ok.stderr,
+            # No origin/<target> — empty repo or branch not pushed yet.
+            rename = self._run(["branch", "-M", target], cwd=root)
+            if not rename.ok:
+                created = self._run(["checkout", "-B", target], cwd=root)
+                if not created.ok:
+                    if not fetch.ok:
+                        return ActionMapper.mapError(
+                            "fetch",
+                            fetch.stderr,
+                            fetch.stdout,
+                            fetch.returncode,
+                        )
+                    return ActionMapper.mapError(
+                        "checkout",
+                        created.stderr or rename.stderr,
+                        created.stdout,
+                        created.returncode,
+                    )
+            return ActionMapper.success(
+                "Ready for first push",
+                f"Remote has no {target} yet — local branch is {target}; Push will create it.",
             )
 
         local_ok = self._run(

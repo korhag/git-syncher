@@ -721,13 +721,18 @@ class DashboardView:
         )
         initial_branch = (existing.default_branch if existing else "") or ""
         branch_options: list[ft.DropdownOption] = []
-        if initial_branch:
+        if not initial_branch and not editing:
+            # Seed common names so empty remotes can be saved without Refresh.
+            for name in self.git.suggestBranchNames():
+                branch_options.append(ft.DropdownOption(key=name, text=name))
+            initial_branch = branch_options[0].key if branch_options else "main"
+        elif initial_branch:
             branch_options.append(
                 ft.DropdownOption(key=initial_branch, text=initial_branch)
             )
         branch_field = ft.Dropdown(
             label="Default branch",
-            hint_text="Click refresh to load branches from Git",
+            hint_text="Usually main — refresh loads remote branches (empty remotes use main)",
             value=initial_branch or None,
             options=branch_options,
             editable=True,
@@ -739,6 +744,18 @@ class DashboardView:
             visible=not editing,
         )
         error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+        def set_error(message: str) -> None:
+            error_text.color = ft.Colors.RED_400
+            error_text.value = message
+
+        def set_info(message: str) -> None:
+            error_text.color = ft.Colors.ON_SURFACE_VARIANT
+            error_text.value = message
+
+        def clear_note() -> None:
+            error_text.color = ft.Colors.RED_400
+            error_text.value = ""
 
         def ensure_branch_option(name: str) -> None:
             name = (name or "").strip()
@@ -794,11 +811,11 @@ class DashboardView:
             path = (path_field.value or "").strip()
             remote = (remote_field.value or "").strip()
             if not path:
-                error_text.value = "Choose a folder first."
+                set_error("Choose a folder first.")
                 self.page.update()
                 return
             if not remote:
-                error_text.value = "Enter a remote URL first."
+                set_error("Enter a remote URL first.")
                 self.page.update()
                 return
 
@@ -820,19 +837,27 @@ class DashboardView:
                 error: Optional[BaseException],
             ) -> None:
                 if error is not None:
-                    error_text.value = str(error)
+                    set_error(str(error))
                     self.page.update()
                     return
                 assert result is not None
                 branches, remote_default, err = result
                 if err:
-                    error_text.value = err
+                    set_error(err)
                     self.page.update()
                     return
-                if not branches:
-                    error_text.value = "No branches found on that remote."
-                    self.page.update()
-                    return
+
+                empty_remote = not branches
+                if empty_remote:
+                    branches = self.git.suggestBranchNames(path)
+                    remote_default = branches[0] if branches else "main"
+                    set_info(
+                        "Remote has no branches yet — using "
+                        f"{remote_default} for the first push "
+                        "(you can type main or master)."
+                    )
+                else:
+                    clear_note()
 
                 branch_field.options = [
                     ft.DropdownOption(key=name, text=name) for name in branches
@@ -844,10 +869,9 @@ class DashboardView:
                     branch_field.value = remote_default
                 else:
                     branch_field.value = branches[0]
-                error_text.value = ""
                 self.page.update()
 
-            error_text.value = "Loading branches from Git…"
+            set_info("Loading branches from Git…")
             self.page.update()
             self.busy.runOrSnack("Loading branches…", work, on_done=done)
 
@@ -863,18 +887,19 @@ class DashboardView:
             path = (path_field.value or "").strip()
             name = (name_field.value or "").strip()
             if not path:
-                error_text.value = "Choose a folder."
+                set_error("Choose a folder.")
                 self.page.update()
                 return
             if not name:
-                error_text.value = "Enter a display name."
+                set_error("Enter a display name.")
                 self.page.update()
                 return
-            branch_value = (branch_field.value or "").strip()
-            if not branch_value:
-                error_text.value = "Pick a default branch (click refresh to load from Git)."
-                self.page.update()
-                return
+            branch_value = self.git.resolveBranchForSave(
+                path,
+                (branch_field.value or "").strip(),
+            )
+            ensure_branch_option(branch_value)
+            branch_field.value = branch_value
 
             dup = self.store.findDuplicate(
                 path,
@@ -882,7 +907,7 @@ class DashboardView:
                 exclude_id=existing.id if existing else None,
             )
             if dup is not None:
-                error_text.value = (
+                set_error(
                     f"This folder is already tracked for branch {branch_value}."
                 )
                 self.page.update()
@@ -934,32 +959,39 @@ class DashboardView:
             ) -> None:
                 save_button.disabled = False
                 if error is not None:
-                    error_text.value = str(error)
+                    set_error(str(error))
                     self.page.update()
                     return
                 assert result is not None
                 switch, err_msg = result
                 if err_msg:
-                    error_text.value = err_msg
+                    set_error(err_msg)
                     self.page.update()
                     return
                 assert switch is not None
                 if not switch.success:
                     # Still saved the picked branch; tell the user why checkout failed.
-                    error_text.value = switch.message or switch.title
+                    set_error(switch.message or switch.title)
                     self.page.update()
                     self.refreshAll()
                     return
 
                 close()
-                if switch.message and switch.title.startswith("Switched"):
-                    Dialogs.showSnack(self.page, switch.title)
+                if switch.message and (
+                    switch.title.startswith("Switched")
+                    or switch.title.startswith("Ready for first push")
+                ):
+                    Dialogs.showSnack(
+                        self.page,
+                        switch.title
+                        + (f" — {switch.message}" if switch.message else ""),
+                    )
                 else:
                     Dialogs.showSnack(self.page, "Project saved")
                 self.refreshAll()
 
             save_button.disabled = True
-            error_text.value = ""
+            clear_note()
             self.page.update()
             if not self.busy.runOrSnack("Saving project…", work, on_done=done):
                 save_button.disabled = False

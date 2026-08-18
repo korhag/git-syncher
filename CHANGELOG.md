@@ -5,6 +5,21 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-08-17
+
+### Added
+
+- Empty Git remotes (no branches yet) can be added using **main** / **master** (or Git’s `init.defaultBranch`) for the first push
+
+### Changed
+
+- Refreshing branches on an empty remote offers default names instead of blocking with “No branches found”
+- Saving a project no longer requires picking a branch first — it falls back to the local branch or **main**
+
+### Fixed
+
+- Checkout no longer fails when `origin/<branch>` does not exist yet — local branch is prepared so Push can create it
+
 ## [1.9.0] - 2026-08-17
 
 ### Added
