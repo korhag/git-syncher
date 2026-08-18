@@ -19,6 +19,13 @@ from app.models.project import (
     SuggestedAction,
 )
 
+# Hide git.cmd / console windows on Windows (refresh otherwise flashes cmd).
+_CREATE_NO_WINDOW = 0x08000000
+
+
+# ------------------------------------------------------------
+# Class: GitResult
+
 
 # ------------------------------------------------------------
 # Class: GitResult
@@ -50,7 +57,39 @@ class GitService:
     # Purpose: Optionally override the git executable path.
     # --------------------------------------------------------
     def __init__(self, git_executable: Optional[str] = None) -> None:
-        self.git_executable = git_executable or shutil.which("git") or "git"
+        self.git_executable = git_executable or self.resolveGitExecutable()
+
+    # --------------------------------------------------------
+    # Method: resolveGitExecutable
+    # Purpose: Prefer git.exe over git.cmd so Windows does not flash a console.
+    # --------------------------------------------------------
+    @staticmethod
+    def resolveGitExecutable() -> str:
+        found = shutil.which("git")
+        if not found:
+            return "git"
+        path = Path(found)
+        if path.suffix.lower() == ".cmd":
+            exe = path.with_suffix(".exe")
+            if exe.is_file():
+                return str(exe)
+        return found
+
+    # --------------------------------------------------------
+    # Method: _hideConsoleKwargs
+    # Purpose: Windows flags so git subprocesses create no visible console.
+    # --------------------------------------------------------
+    @staticmethod
+    def _hideConsoleKwargs() -> dict:
+        if os.name != "nt":
+            return {}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        return {
+            "creationflags": _CREATE_NO_WINDOW,
+            "startupinfo": startupinfo,
+        }
 
     # --------------------------------------------------------
     # Method: isGitAvailable
@@ -64,6 +103,7 @@ class GitService:
                 text=True,
                 timeout=10,
                 check=False,
+                **self._hideConsoleKwargs(),
             )
             return version.returncode == 0
         except (OSError, subprocess.SubprocessError):
@@ -81,6 +121,7 @@ class GitService:
                 text=True,
                 timeout=10,
                 check=False,
+                **self._hideConsoleKwargs(),
             )
             return version.stdout.strip() if version.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):
@@ -1228,6 +1269,7 @@ class GitService:
                 timeout=timeout,
                 env=run_env,
                 check=False,
+                **self._hideConsoleKwargs(),
             )
             return GitResult(
                 returncode=completed.returncode,

@@ -300,6 +300,8 @@ class Dialogs:
     # --------------------------------------------------------
     # Method: showSnack
     # Purpose: Brief status toast at the bottom of the page.
+    # Notes: Implemented via show_dialog (Flet 0.86). Callers must
+    #        pop any open AlertDialog first, or the snack steals the stack.
     # --------------------------------------------------------
     @staticmethod
     def showSnack(page: ft.Page, message: str, error: bool = False) -> None:

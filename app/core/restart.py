@@ -30,16 +30,6 @@ def projectRoot() -> Path:
 def _scheduleHardExit(delay_seconds: float = 1.0) -> None:
     def hard_exit() -> None:
         time.sleep(delay_seconds)
-        # #region agent log
-        from app.core.debug_log import agentLog
-
-        agentLog(
-            "C",
-            "restart.py:_scheduleHardExit",
-            "about_to_os_exit",
-            {"delay": delay_seconds, "pid": os.getpid()},
-        )
-        # #endregion
         os._exit(0)
 
     threading.Thread(target=hard_exit, daemon=True).start()
@@ -111,16 +101,6 @@ def restartApp(page: Optional[ft.Page] = None) -> bool:
 
     # Drop single-instance lock before spawn so the new process can acquire it.
     releaseAppLock()
-    # #region agent log
-    from app.core.debug_log import agentLog
-
-    agentLog(
-        "C",
-        "restart.py:restartApp",
-        "restart_spawn",
-        {"pid": os.getpid(), "nt": os.name == "nt"},
-    )
-    # #endregion
 
     if os.name == "nt":
         if not _spawnWindows(root):

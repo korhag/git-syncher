@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 from typing import Callable
 
 import flet as ft
 
 from app import __version__
-from app.core.debug_log import agentLog
 from app.core.store import VAULT_DAMAGED_MESSAGE, VaultDamagedError, VaultStore
 from app.ui.dialogs import Dialogs
 
@@ -130,31 +128,6 @@ class UnlockView:
         )
         confirm_field.on_submit = password_field.on_submit
         primary_button.on_click = password_field.on_submit
-
-        def on_password_change(_e: ft.ControlEvent) -> None:
-            # #region agent log
-            agentLog(
-                "A",
-                "unlock.py:password_change",
-                "password_field_event",
-                {"pid": os.getpid()},
-            )
-            # #endregion
-
-        password_field.on_change = on_password_change
-
-        def on_unlock_click(e: ft.ControlEvent) -> None:
-            # #region agent log
-            agentLog(
-                "A",
-                "unlock.py:unlock_click",
-                "unlock_button_clicked",
-                {"pid": os.getpid()},
-            )
-            # #endregion
-            password_field.on_submit(e)
-
-        primary_button.on_click = on_unlock_click
         restore_button.on_click = lambda _e: self._restoreBackup(
             password_field,
             error_text,
@@ -234,19 +207,6 @@ class UnlockView:
             ],
             alignment=ft.MainAxisAlignment.END,
         )
-        # #region agent log
-        agentLog(
-            "A",
-            "unlock.py:build",
-            "unlock_stack_built",
-            {
-                "footer_expand": False,
-                "layout": "column",
-                "busy_not_in_view": True,
-                "pid": os.getpid(),
-            },
-        )
-        # #endregion
         return ft.Container(
             expand=True,
             padding=20,

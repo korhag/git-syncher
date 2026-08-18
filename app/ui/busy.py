@@ -63,16 +63,6 @@ class BusyOverlay:
         self._busy = True
         self._message.value = message or "Working…"
         self.control.visible = True
-        # #region agent log
-        from app.core.debug_log import agentLog
-
-        agentLog(
-            "B",
-            "busy.py:show",
-            "busy_overlay_shown",
-            {"message": message or ""},
-        )
-        # #endregion
         self.page.update()
 
     # --------------------------------------------------------

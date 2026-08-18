@@ -825,7 +825,7 @@ class DashboardView:
                             email=email,
                         )
                         self.store.updateAccount(account)
-                        Dialogs.showSnack(self.page, "Account updated")
+                        snack = "Account updated"
                     else:
                         account = VaultAccount(
                             id=str(uuid.uuid4()),
@@ -834,7 +834,7 @@ class DashboardView:
                             email=email,
                         )
                         self.store.addAccount(account)
-                        Dialogs.showSnack(self.page, "Account added")
+                        snack = "Account added"
                 except ValueError as exc:
                     form_error.value = str(exc)
                     self.page.update()
@@ -844,8 +844,11 @@ class DashboardView:
                     self.page.update()
                     return
 
+                # Pop the form before the snack — showSnack uses show_dialog
+                # and would otherwise steal the dialog stack.
                 close_form()
                 rebuild_list()
+                Dialogs.showSnack(self.page, snack)
                 self.page.update()
 
             form_dialog = ft.AlertDialog(

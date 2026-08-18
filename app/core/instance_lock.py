@@ -169,16 +169,6 @@ def releaseAppLock() -> None:
 def showAlreadyRunningAndExit() -> None:
     # Do not start a second Flet window — that freezes the instance that
     # already holds the lock (pythonw UI + python.exe "Already running").
-    # #region agent log
-    from app.core.debug_log import agentLog
-
-    agentLog(
-        "C",
-        "instance_lock.py:showAlreadyRunningAndExit",
-        "duplicate_exit_no_flet",
-        {"pid": os.getpid()},
-    )
-    # #endregion
     try:
         print(
             "Git Syncher is already running. Close that window first.",
