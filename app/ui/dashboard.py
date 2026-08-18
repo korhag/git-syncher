@@ -914,17 +914,21 @@ class DashboardView:
     # --------------------------------------------------------
     def openAddProjectDialog(self, existing: Optional[ProjectConfig] = None) -> None:
         editing = existing is not None
-        name_field = ft.TextField(label="Display name", value=existing.name if existing else "")
-        path_field = ft.TextField(
-            label="Folder path",
-            value=existing.path if existing else "",
-            read_only=True,
-            expand=True,
-        )
-        remote_field = ft.TextField(
-            label="Remote URL (HTTPS)",
-            value=existing.remote_url if existing else "",
-        )
+        # Fixed trailing slot so rows with/without icon buttons share one width.
+        trailing_slot_width = 40
+
+        def field_row(
+            field: ft.Control,
+            trailing: Optional[ft.Control] = None,
+        ) -> ft.Row:
+            end = trailing if trailing is not None else ft.Container(
+                width=trailing_slot_width
+            )
+            return ft.Row(
+                [field, end],
+                spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
 
         def build_account_options() -> list[ft.DropdownOption]:
             options: list[ft.DropdownOption] = [
@@ -956,24 +960,44 @@ class DashboardView:
 
         selected_account_id = {"value": initial_account_id}
         account_field = ft.Dropdown(
-            label="Git account",
-            hint_text="Pick a saved identity or enter details manually",
+            label="Account picker",
+            hint_text="Fills Git username and email",
             value=initial_account_id or None,
             options=build_account_options(),
+            expand=True,
+        )
+        name_field = ft.TextField(
+            label="Display name",
+            value=existing.name if existing else "",
+            expand=True,
+        )
+        path_field = ft.TextField(
+            label="Folder path",
+            value=existing.path if existing else "",
+            read_only=True,
+            expand=True,
+        )
+        remote_field = ft.TextField(
+            label="Remote URL (HTTPS)",
+            value=existing.remote_url if existing else "",
+            expand=True,
         )
         user_field = ft.TextField(
             label="Git username",
             value=existing.username if existing else "",
+            expand=True,
         )
         email_field = ft.TextField(
             label="Git email",
             value=existing.email if existing else "",
+            expand=True,
         )
         pat_field = ft.TextField(
             label="Personal Access Token (PAT)",
             value=existing.pat if existing else "",
             password=True,
             can_reveal_password=True,
+            expand=True,
         )
         initial_branch = (existing.default_branch if existing else "") or ""
         branch_options: list[ft.DropdownOption] = []
@@ -1288,46 +1312,40 @@ class DashboardView:
 
         save_button.on_click = save
 
+        browse_button = ft.IconButton(
+            icon=ft.Icons.FOLDER_OPEN,
+            tooltip="Browse",
+            on_click=pick_folder,
+            disabled=editing,
+            width=trailing_slot_width,
+        )
+        refresh_button = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            tooltip="Load branches from Git",
+            on_click=refresh_branches,
+            width=trailing_slot_width,
+        )
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Edit project" if editing else "Add project"),
             content=ft.Container(
-                width=480,
+                width=560,
                 content=ft.Column(
                     [
-                        name_field,
-                        ft.Row(
-                            [
-                                path_field,
-                                ft.IconButton(
-                                    icon=ft.Icons.FOLDER_OPEN,
-                                    tooltip="Browse",
-                                    on_click=pick_folder,
-                                    disabled=editing,
-                                ),
-                            ]
-                        ),
-                        remote_field,
-                        account_field,
-                        user_field,
-                        email_field,
-                        pat_field,
-                        ft.Row(
-                            [
-                                branch_field,
-                                ft.IconButton(
-                                    icon=ft.Icons.REFRESH,
-                                    tooltip="Load branches from Git",
-                                    on_click=refresh_branches,
-                                ),
-                            ]
-                        ),
+                        field_row(account_field),
+                        field_row(name_field),
+                        field_row(path_field, browse_button),
+                        field_row(remote_field),
+                        field_row(user_field),
+                        field_row(email_field),
+                        field_row(pat_field),
+                        field_row(branch_field, refresh_button),
                         init_checkbox,
                         error_text,
                     ],
                     tight=True,
                     scroll=ft.ScrollMode.AUTO,
-                    height=420,
+                    height=560,
                 ),
             ),
             actions=[
