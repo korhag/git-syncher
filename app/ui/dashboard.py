@@ -13,6 +13,7 @@ from app.core.store import VaultStore
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.busy import BusyOverlay
 from app.ui.dialogs import Dialogs
+from app import __version__
 
 
 # Action chip colors / labels
@@ -103,6 +104,17 @@ class DashboardView:
         )
 
         self._rebuildCards()
+        footer = ft.Row(
+            [
+                ft.Container(expand=True),
+                ft.Text(
+                    f"v{__version__}",
+                    size=11,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.END,
+        )
         return ft.Container(
             expand=True,
             padding=20,
@@ -111,6 +123,7 @@ class DashboardView:
                     header,
                     ft.Divider(),
                     self.list_column,
+                    footer,
                 ],
                 expand=True,
             ),
