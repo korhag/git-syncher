@@ -1033,6 +1033,60 @@ class DashboardView:
         )
         error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
         applying_account = {"active": False}
+        from_git = {"value": False}
+
+        this_computer_hint = (
+            "Publish this folder to Git. Initialize if it is not a repo yet."
+        )
+        from_git_hint = (
+            "Clone a Git repo into an empty folder on this computer."
+        )
+        mode_hint = ft.Text(
+            this_computer_hint,
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+        )
+
+        def apply_from_git_mode(enabled: bool) -> None:
+            from_git["value"] = enabled
+            init_checkbox.visible = (not enabled) and (not editing)
+            if enabled:
+                path_field.label = "Empty folder to clone into"
+                path_field.hint_text = "Must be empty"
+                branch_field.hint_text = (
+                    "Refresh loads remote branches, then clone that branch"
+                )
+                mode_hint.value = from_git_hint
+            else:
+                path_field.label = "Folder path"
+                path_field.hint_text = None
+                branch_field.hint_text = (
+                    "Pick a folder or Refresh — new / empty remotes use main"
+                )
+                mode_hint.value = this_computer_hint
+
+        def on_mode_change(e: ft.ControlEvent) -> None:
+            idx = 0
+            control = getattr(e, "control", None)
+            if control is not None:
+                idx = int(getattr(control, "selected_index", 0) or 0)
+            apply_from_git_mode(idx == 1)
+            self.page.update()
+
+        def maybe_fill_name_from_url() -> None:
+            if editing or (name_field.value or "").strip():
+                return
+            derived = GitService.displayNameFromRemoteUrl(
+                (remote_field.value or "").strip()
+            )
+            if derived:
+                name_field.value = derived
+
+        def on_remote_change(_e: ft.ControlEvent) -> None:
+            maybe_fill_name_from_url()
+            self.page.update()
+
+        remote_field.on_change = on_remote_change
 
         def resolve_account(raw: str) -> Optional[VaultAccount]:
             return findAccountByKey(self.store.accounts, raw)
@@ -1147,6 +1201,20 @@ class DashboardView:
                 path_field.value = selected
                 if not name_field.value:
                     name_field.value = selected.replace("\\", "/").rstrip("/").split("/")[-1]
+                if from_git["value"]:
+                    init_checkbox.visible = False
+                    if self.git.isRepo(selected):
+                        set_error(
+                            "This folder is already a Git repo. "
+                            "Use the This computer tab, or pick an empty folder."
+                        )
+                    elif not self.git.isEmptyDirectory(selected):
+                        set_error("Choose an empty folder to clone into.")
+                    else:
+                        clear_note()
+                    note_existing_if_any()
+                    self.page.update()
+                    return
                 if self.git.isRepo(selected):
                     remote_field.value = self.git.detectRemoteUrl(selected) or remote_field.value
                     names = self.git.suggestBranchNames(selected)
@@ -1177,12 +1245,12 @@ class DashboardView:
         def refresh_branches(_e: ft.ControlEvent) -> None:
             path = (path_field.value or "").strip()
             remote = (remote_field.value or "").strip()
-            if not path:
-                set_error("Choose a folder first.")
-                self.page.update()
-                return
             if not remote:
                 set_error("Enter a remote URL first.")
+                self.page.update()
+                return
+            if not from_git["value"] and not path:
+                set_error("Choose a folder first.")
                 self.page.update()
                 return
 
@@ -1216,6 +1284,13 @@ class DashboardView:
 
                 empty_remote = not branches
                 if empty_remote:
+                    if from_git["value"]:
+                        set_error(
+                            "Remote has no branches yet. "
+                            "Use This computer to publish the first commit."
+                        )
+                        self.page.update()
+                        return
                     branches = self.git.suggestBranchNames(path)
                     remote_default = branches[0] if branches else "main"
                     set_info(
@@ -1253,6 +1328,9 @@ class DashboardView:
                 return
             path = (path_field.value or "").strip()
             name = (name_field.value or "").strip()
+            if from_git["value"] and not name:
+                maybe_fill_name_from_url()
+                name = (name_field.value or "").strip()
             if not path:
                 set_error("Choose a folder.")
                 self.page.update()
@@ -1261,12 +1339,31 @@ class DashboardView:
                 set_error("Enter a display name.")
                 self.page.update()
                 return
-            branch_value = self.git.resolveBranchForSave(
-                path,
-                (branch_field.value or "").strip(),
-            )
-            ensure_branch_option(branch_value)
-            branch_field.value = branch_value
+            if from_git["value"] and not editing:
+                remote_url = (remote_field.value or "").strip()
+                if not remote_url:
+                    set_error("Enter a remote URL.")
+                    self.page.update()
+                    return
+                if self.git.isRepo(path):
+                    set_error(
+                        "This folder is already a Git repo. "
+                        "Use the This computer tab instead."
+                    )
+                    self.page.update()
+                    return
+                if not self.git.isEmptyDirectory(path):
+                    set_error("Choose an empty folder to clone into.")
+                    self.page.update()
+                    return
+                branch_value = (branch_field.value or "").strip()
+            else:
+                branch_value = self.git.resolveBranchForSave(
+                    path,
+                    (branch_field.value or "").strip(),
+                )
+                ensure_branch_option(branch_value)
+                branch_field.value = branch_value
 
             dup = self.store.findDuplicate(
                 path,
@@ -1303,6 +1400,19 @@ class DashboardView:
 
             def work() -> tuple[Optional[ActionOutcome], Optional[str]]:
                 """Return (switch_outcome_or_None, error_message_or_None)."""
+                if from_git["value"] and not editing:
+                    clone_out = self.git.cloneRepo(project, path, branch_value)
+                    if not clone_out.success:
+                        return None, clone_out.message or clone_out.title
+                    detected = self.git.detectBranch(path)
+                    if detected:
+                        project.default_branch = detected
+                    if updating_existing:
+                        self.store.updateProject(project)
+                    else:
+                        self.store.addProject(project)
+                    return clone_out, None
+
                 if not self.git.isRepo(path):
                     if should_init:
                         outcome = self.git.initRepo(path, branch_value)
@@ -1359,6 +1469,7 @@ class DashboardView:
                 elif switch.message and (
                     switch.title.startswith("Switched")
                     or switch.title.startswith("Ready for first push")
+                    or switch.title.startswith("Cloned")
                 ):
                     Dialogs.showSnack(
                         self.page,
@@ -1393,6 +1504,53 @@ class DashboardView:
         )
         win_h = int(getattr(self.page.window, "height", None) or 860)
         content_h = max(380, min(int(win_h * 0.68), win_h - 220))
+        form_controls: list[ft.Control] = [
+            field_row(account_field),
+            field_row(name_field),
+            field_row(path_field, browse_button),
+            field_row(remote_field),
+            field_row(user_field),
+            field_row(email_field),
+            field_row(pat_field),
+            field_row(branch_field, refresh_button),
+            init_checkbox,
+            error_text,
+        ]
+        if not editing:
+            form_controls.insert(
+                0,
+                ft.Tabs(
+                    length=2,
+                    selected_index=0,
+                    on_change=on_mode_change,
+                    content=ft.Column(
+                        [
+                            ft.TabBar(
+                                tabs=[
+                                    ft.Tab(label="This computer"),
+                                    ft.Tab(label="From Git"),
+                                ]
+                            ),
+                            ft.TabBarView(
+                                height=40,
+                                controls=[
+                                    ft.Text(
+                                        this_computer_hint,
+                                        size=12,
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                    ),
+                                    ft.Text(
+                                        from_git_hint,
+                                        size=12,
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                    ),
+                                ],
+                            ),
+                        ],
+                        tight=True,
+                    ),
+                ),
+            )
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Edit project" if editing else "Add project"),
@@ -1400,18 +1558,7 @@ class DashboardView:
                 width=560,
                 height=content_h,
                 content=ft.Column(
-                    [
-                        field_row(account_field),
-                        field_row(name_field),
-                        field_row(path_field, browse_button),
-                        field_row(remote_field),
-                        field_row(user_field),
-                        field_row(email_field),
-                        field_row(pat_field),
-                        field_row(branch_field, refresh_button),
-                        init_checkbox,
-                        error_text,
-                    ],
+                    form_controls,
                     tight=True,
                     scroll=ft.ScrollMode.AUTO,
                     expand=True,

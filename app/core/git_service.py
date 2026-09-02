@@ -278,6 +278,95 @@ class GitService:
         )
 
     # --------------------------------------------------------
+    # Method: displayNameFromRemoteUrl
+    # Purpose: Repo name from a remote URL (MyCad.git → MyCad).
+    # --------------------------------------------------------
+    @staticmethod
+    def displayNameFromRemoteUrl(url: str) -> str:
+        cleaned = (url or "").strip().rstrip("/")
+        if cleaned.lower().endswith(".git"):
+            cleaned = cleaned[:-4]
+        cleaned = cleaned.replace("\\", "/")
+        if ":" in cleaned and "://" not in cleaned:
+            cleaned = cleaned.rsplit(":", 1)[-1]
+        name = cleaned.rsplit("/", 1)[-1].strip()
+        return name
+
+    # --------------------------------------------------------
+    # Method: isEmptyDirectory
+    # Purpose: True when path exists and contains no files or folders.
+    # --------------------------------------------------------
+    @staticmethod
+    def isEmptyDirectory(path: str | Path) -> bool:
+        root = Path(path)
+        if not root.is_dir():
+            return False
+        try:
+            next(root.iterdir())
+        except StopIteration:
+            return True
+        return False
+
+    # --------------------------------------------------------
+    # Method: cloneRepo
+    # Purpose: Clone a remote into an empty local folder.
+    # --------------------------------------------------------
+    def cloneRepo(
+        self,
+        project: ProjectConfig,
+        dest: str | Path,
+        branch: str = "",
+    ) -> ActionOutcome:
+        dest_path = Path(dest)
+        remote_url = (project.remote_url or "").strip()
+        if not remote_url:
+            return ActionOutcome(
+                title="No remote URL",
+                message="Enter a remote URL first.",
+            )
+        dest_path.mkdir(parents=True, exist_ok=True)
+        if self.isRepo(dest_path):
+            return ActionOutcome(
+                title="Already a Git repository",
+                message=(
+                    "This folder is already a Git repo. "
+                    "Use the This computer tab instead."
+                ),
+            )
+        if not self.isEmptyDirectory(dest_path):
+            return ActionOutcome(
+                title="Folder is not empty",
+                message="Choose an empty folder to clone into.",
+            )
+
+        args = ["clone"]
+        name = (branch or "").strip()
+        if name:
+            args.extend(["-b", name])
+        args.extend([remote_url, str(dest_path)])
+        result = self._runWithAuth(
+            args,
+            cwd=dest_path.parent,
+            project=project,
+            timeout=180,
+        )
+        if not result.ok:
+            return ActionMapper.mapError(
+                "clone",
+                result.stderr,
+                result.stdout,
+                result.returncode,
+                requested_branch=name,
+            )
+
+        self.applyLocalIdentity(dest_path, project.username, project.email)
+        checked_out = self.detectBranch(dest_path) or name
+        return ActionMapper.success(
+            "Cloned from Git",
+            checked_out or remote_url,
+        )
+
+    # --------------------------------------------------------
     # Method: listRemoteBranches
     # Purpose: Read-only list of branch names on the Git remote.
     # Output: (branches, default_branch, error_message)
@@ -286,35 +375,40 @@ class GitService:
         self,
         project: ProjectConfig,
     ) -> tuple[list[str], str, str]:
-        root = Path(project.path)
+        root = Path(project.path) if (project.path or "").strip() else None
         remote_url = (project.remote_url or "").strip()
         if not remote_url:
             return [], "", "Enter a remote URL first."
-        if not root.is_dir():
-            return [], "", "Choose a folder first."
 
-        # Always query the URL from settings (may differ from saved origin until Save).
-        heads = self._runWithAuth(
-            ["ls-remote", "--heads", remote_url],
-            cwd=root,
-            project=project,
-            timeout=60,
-        )
-        if not heads.ok:
-            message = (heads.stderr or heads.stdout or "Could not list remote branches").strip()
-            return [], "", message
+        temp_cwd: Optional[Path] = None
+        if root is None or not root.is_dir():
+            temp_cwd = Path(tempfile.mkdtemp(prefix="gs_lsremote_"))
+            root = temp_cwd
 
-        branches = self.parseLsRemoteHeads(heads.stdout)
-        default_branch = self._detectDefaultFromLsRemote(root, project, remote_url)
-        if default_branch and default_branch not in branches:
-            default_branch = ""
-        if not default_branch and branches:
-            # Fallbacks when HEAD symref is unavailable.
-            for name in ("main", "master"):
-                if name in branches:
-                    default_branch = name
-                    break
-        return branches, default_branch, ""
+        try:
+            heads = self._runWithAuth(
+                ["ls-remote", "--heads", remote_url],
+                cwd=root,
+                project=project,
+                timeout=60,
+            )
+            if not heads.ok:
+                message = (heads.stderr or heads.stdout or "Could not list remote branches").strip()
+                return [], "", message
+
+            branches = self.parseLsRemoteHeads(heads.stdout)
+            default_branch = self._detectDefaultFromLsRemote(root, project, remote_url)
+            if default_branch and default_branch not in branches:
+                default_branch = ""
+            if not default_branch and branches:
+                for name in ("main", "master"):
+                    if name in branches:
+                        default_branch = name
+                        break
+            return branches, default_branch, ""
+        finally:
+            if temp_cwd is not None:
+                shutil.rmtree(temp_cwd, ignore_errors=True)
 
     # --------------------------------------------------------
     # Method: parseLsRemoteHeads

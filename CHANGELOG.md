@@ -5,6 +5,12 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-02
+
+### Added
+
+- Add project **From Git** tab clones a remote into an empty folder (account, URL, PAT, and branch), then adds the dashboard card
+
 ## [1.12.2] - 2026-09-02
 
 ### Fixed
