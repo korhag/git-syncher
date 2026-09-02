@@ -142,12 +142,23 @@ class GitService:
     # Method: initRepo
     # Purpose: Initialize a new Git repository at path.
     # --------------------------------------------------------
-    def initRepo(self, path: str | Path) -> ActionOutcome:
+    def initRepo(self, path: str | Path, branch: str = "") -> ActionOutcome:
         root = Path(path)
         root.mkdir(parents=True, exist_ok=True)
-        result = self._run(["init"], cwd=root)
+        name = (branch or "").strip()
+        args = ["init", "-b", name] if name else ["init"]
+        result = self._run(args, cwd=root)
+        if not result.ok and name:
+            fallback = self._run(["init"], cwd=root)
+            if fallback.ok:
+                self._run(["checkout", "-B", name], cwd=root)
+                return ActionMapper.success("Repository initialized", name)
+            result = fallback
         if result.ok:
-            return ActionMapper.success("Repository initialized", result.stdout.strip())
+            return ActionMapper.success(
+                "Repository initialized",
+                name or result.stdout.strip(),
+            )
         return ActionMapper.mapError("init", result.stderr, result.stdout, result.returncode)
 
     # --------------------------------------------------------
@@ -203,19 +214,44 @@ class GitService:
         return name or "main"
 
     # --------------------------------------------------------
+    # Method: listLocalBranches
+    # Purpose: Real local branch refs (empty on an unborn HEAD).
+    # --------------------------------------------------------
+    def listLocalBranches(self, path: str | Path) -> list[str]:
+        root = Path(path)
+        if not root.is_dir():
+            return []
+        result = self._run(
+            ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            cwd=root,
+        )
+        if not result.ok:
+            return []
+        names: list[str] = []
+        for line in result.stdout.splitlines():
+            name = line.strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    # --------------------------------------------------------
     # Method: suggestBranchNames
-    # Purpose: Branch names to offer when the remote is empty.
-    # Output: Ordered unique list (local, init default, main, master).
+    # Purpose: Branch names to offer for a first push / new project.
+    # Output: Real local refs when they exist; otherwise only main.
     # --------------------------------------------------------
     def suggestBranchNames(self, path: str | Path = "") -> list[str]:
-        names: list[str] = []
-        local = self.detectBranch(path) if path else ""
-        init_default = self.detectInitDefaultBranch(path or None)
-        for name in (local, init_default, "main", "master"):
-            cleaned = (name or "").strip()
-            if cleaned and cleaned not in names:
-                names.append(cleaned)
-        return names or ["main"]
+        if path and self.isRepo(path):
+            local_refs = self.listLocalBranches(path)
+            if local_refs:
+                ordered: list[str] = []
+                current = self.detectBranch(path)
+                if current and current in local_refs:
+                    ordered.append(current)
+                for name in local_refs:
+                    if name not in ordered:
+                        ordered.append(name)
+                return ordered
+        return ["main"]
 
     # --------------------------------------------------------
     # Method: resolveBranchForSave
@@ -364,15 +400,23 @@ class GitService:
         # is chosen in Edit project and drives checkoutSavedBranch on Save.
 
         if fetch and (project.remote_url or status.remote_url):
-            self._runWithAuth(
+            fetch_result = self._runWithAuth(
                 ["fetch", "--prune", "origin"],
                 cwd=root,
                 project=project,
                 timeout=60,
             )
+            status.remote_empty = self._detectRemoteEmpty(
+                root,
+                project,
+                fetch_ok=fetch_result.ok,
+            )
+        else:
+            status.remote_empty = not self._hasAnyOriginRefs(root)
 
         status.changes = self.listChanges(root)
         status.dirty = len(status.changes) > 0
+        status.has_local_commits = self._hasLocalCommits(root)
         ahead, behind, upstream_ok = self._aheadBehind(root, status.branch)
         status.ahead = ahead
         status.behind = behind
@@ -549,17 +593,6 @@ class GitService:
             return ActionMapper.success("No branch selected", "")
 
         current = self.detectBranch(root)
-        if current != target and self.listChanges(root):
-            return ActionOutcome(
-                title="Cannot switch branch",
-                message=(
-                    f"Cannot switch to {target} while this computer has unsaved files. "
-                    "Commit or discard them first, then save again."
-                ),
-                choices=[],
-                details="",
-            )
-
         fetch = self._runWithAuth(
             ["fetch", "--prune", "origin"],
             cwd=root,
@@ -568,6 +601,35 @@ class GitService:
         )
         remote_ref = f"origin/{target}"
         remote_ok = self._run(["rev-parse", "--verify", remote_ref], cwd=root)
+        changes = self.listChanges(root)
+        tracked_dirty = any(
+            change.kind != FileChangeKind.UNTRACKED for change in changes
+        )
+
+        if current != target:
+            # Switching onto an existing remote branch needs a clean tree.
+            # First-push rename (no origin/<target>) is safe with untracked files,
+            # including an unborn master → main before the first commit.
+            if remote_ok.ok and changes:
+                return ActionOutcome(
+                    title="Cannot switch branch",
+                    message=(
+                        f"Cannot switch to {target} while this computer has unsaved files. "
+                        "Commit or discard them first, then save again."
+                    ),
+                    choices=[],
+                    details="",
+                )
+            if not remote_ok.ok and tracked_dirty:
+                return ActionOutcome(
+                    title="Cannot switch branch",
+                    message=(
+                        f"Cannot switch to {target} while this computer has unsaved tracked files. "
+                        "Commit or discard them first, then save again."
+                    ),
+                    choices=[],
+                    details="",
+                )
 
         if current == target:
             if remote_ok.ok:
@@ -667,10 +729,18 @@ class GitService:
     ) -> ActionOutcome:
         root = Path(project.path)
         branch = self.detectBranch(root) or project.default_branch or "main"
+        remote_ref_ok = self._run(
+            ["rev-parse", "--verify", f"origin/{branch}"],
+            cwd=root,
+        ).ok
+        # --force-with-lease fails when there is no remote-tracking ref
+        # (empty Git remotes). First publish is a normal -u push.
+        use_force = force and remote_ref_ok
+        use_upstream = set_upstream or not remote_ref_ok
         args = ["push"]
-        if force:
+        if use_force:
             args.append("--force-with-lease")
-        if set_upstream:
+        if use_upstream:
             args.extend(["-u", "origin", branch])
         else:
             args.extend(["origin", branch])
@@ -681,6 +751,7 @@ class GitService:
                 result.stderr,
                 result.stdout,
                 result.returncode,
+                local_branch=branch,
             )
 
         updated = [branch]
@@ -1008,10 +1079,15 @@ class GitService:
             return ActionOutcome(
                 title="Remote branch not found",
                 message=(
-                    "Could not find a branch on Git to match. "
-                    "Check the remote URL and default branch in project settings."
+                    "Git has no branches yet — there is nothing to match. "
+                    "Commit if needed, then send this branch to Git (first push)."
                 ),
                 choices=[
+                    ActionChoice(
+                        ActionId.FIRST_PUSH,
+                        "Send this branch to Git",
+                        description="Create this branch on the remote (first push).",
+                    ),
                     ActionChoice(ActionId.OPEN_SETTINGS, "Open project settings"),
                     ActionChoice(ActionId.CANCEL, "Cancel"),
                 ],
@@ -1057,6 +1133,45 @@ class GitService:
             "This computer now matches Git",
             f"Reset to {remote_ref}",
         )
+
+    # --------------------------------------------------------
+    # Method: _hasAnyOriginRefs
+    # Purpose: True when fetch stored at least one origin remote-tracking ref.
+    # --------------------------------------------------------
+    def _hasAnyOriginRefs(self, root: Path) -> bool:
+        result = self._run(
+            ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"],
+            cwd=root,
+        )
+        if not result.ok:
+            return False
+        return any(line.strip() for line in result.stdout.splitlines())
+
+    # --------------------------------------------------------
+    # Method: _detectRemoteEmpty
+    # Purpose: Prefer live ls-remote after a failed fetch so stale
+    #          origin/* refs cannot hide an empty Git remote.
+    # --------------------------------------------------------
+    def _detectRemoteEmpty(
+        self,
+        root: Path,
+        project: ProjectConfig,
+        fetch_ok: bool,
+    ) -> bool:
+        if fetch_ok:
+            return not self._hasAnyOriginRefs(root)
+        heads, _default, err = self.listRemoteBranches(project)
+        if not err:
+            return len(heads) == 0
+        return not self._hasAnyOriginRefs(root)
+
+    # --------------------------------------------------------
+    # Method: _hasLocalCommits
+    # Purpose: True when HEAD exists (not an unborn branch).
+    # --------------------------------------------------------
+    def _hasLocalCommits(self, root: Path) -> bool:
+        result = self._run(["rev-parse", "--verify", "HEAD"], cwd=root)
+        return result.ok
 
     # --------------------------------------------------------
     # Method: detectRemoteDefaultBranch
@@ -1153,6 +1268,12 @@ class GitService:
             return SuggestedAction.RESOLVE
         if status.diverges_from_default:
             return SuggestedAction.MERGE
+        if status.remote_empty:
+            if status.dirty or not status.has_local_commits:
+                return SuggestedAction.COMMIT
+            return SuggestedAction.PUSH
+        if status.upstream_missing and not status.has_local_commits:
+            return SuggestedAction.COMMIT
         if status.upstream_missing:
             return SuggestedAction.RESOLVE
         if status.dirty:

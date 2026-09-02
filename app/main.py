@@ -53,9 +53,9 @@ class GitSyncherApp:
         self.page.title = "Git Syncher"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.window.width = 960
-        self.page.window.height = 720
+        self.page.window.height = 860
         self.page.window.min_width = 720
-        self.page.window.min_height = 520
+        self.page.window.min_height = 640
         self.page.padding = 0
         self.page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL)
 

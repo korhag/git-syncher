@@ -161,6 +161,44 @@ class TestPlainStatusLines:
         assert any("No origin/feature" in line for line in lines)
 
     # --------------------------------------------------------
+    # Method: testEmptyRemoteDirty
+    # --------------------------------------------------------
+    def testEmptyRemoteDirty(self) -> None:
+        status = _status(
+            branch="master",
+            remote_empty=True,
+            has_local_commits=False,
+            dirty=True,
+            upstream_missing=True,
+            suggested_action=SuggestedAction.COMMIT,
+            changes=[FileChange(path="README.md", kind=FileChangeKind.UNTRACKED)],
+        )
+        lines = status.plainStatusLines()
+        assert any("Git has no commits yet" in line for line in lines)
+        assert any("Commit, then Push" in line for line in lines)
+        compare = status.dashboardCompareLines()
+        assert compare == [
+            "This computer: master",
+            "Git: empty (no branches yet)",
+        ]
+
+    # --------------------------------------------------------
+    # Method: testEmptyRemoteReadyToPush
+    # --------------------------------------------------------
+    def testEmptyRemoteReadyToPush(self) -> None:
+        status = _status(
+            branch="master",
+            remote_empty=True,
+            has_local_commits=True,
+            dirty=False,
+            upstream_missing=True,
+            suggested_action=SuggestedAction.PUSH,
+        )
+        lines = status.plainStatusLines()
+        assert any("Git has no origin/master yet" in line for line in lines)
+        assert any("Push will create it" in line for line in lines)
+
+    # --------------------------------------------------------
     # Method: testMissingPathAndNotRepo
     # --------------------------------------------------------
     def testMissingPathAndNotRepo(self) -> None:

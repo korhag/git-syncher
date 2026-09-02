@@ -88,6 +88,23 @@ class TestActionMapper:
         assert any(c.id == ActionId.FIRST_PUSH for c in outcome.choices)
 
     # --------------------------------------------------------
+    # Method: testSrcRefspecNotNonFastForward
+    # --------------------------------------------------------
+    def testSrcRefspecNotNonFastForward(self) -> None:
+        outcome = ActionMapper.mapError(
+            "push",
+            stderr=(
+                "error: src refspec master does not match any\n"
+                "error: failed to push some refs to 'https://github.com/example/repo.git'"
+            ),
+        )
+        assert outcome.title == "Nothing to push yet"
+        ids = [c.id for c in outcome.choices]
+        assert ActionId.COMMIT in ids
+        assert ActionId.OVERWRITE_REMOTE not in ids
+        assert ActionId.PULL_FIRST not in ids
+
+    # --------------------------------------------------------
     # Method: testMissingRemoteRefWithBranchContext
     # --------------------------------------------------------
     def testMissingRemoteRefWithBranchContext(self) -> None:

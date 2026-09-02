@@ -166,6 +166,7 @@ class TestDefaultBranchDiverge:
             _runGit(base, "clone", str(bare), str(clone))
             _runGit(clone, "config", "user.email", "test@example.com")
             _runGit(clone, "config", "user.name", "Test")
+            _runGit(clone, "checkout", "-B", "main", "origin/main")
             _runGit(clone, "checkout", "-b", "local-only")
 
             service = GitService()

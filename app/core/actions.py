@@ -26,6 +26,7 @@ class ActionId(str, Enum):
     INIT_REPO = "init_repo"
     SET_REMOTE = "set_remote"
     FIRST_PUSH = "first_push"
+    COMMIT = "commit"
     KEEP_LOCAL = "keep_local"
     TAKE_REMOTE = "take_remote"
     COMPARE_FILE = "compare_file"
@@ -131,6 +132,20 @@ class ActionMapper:
                         destructive=True,
                         requires_confirm=True,
                     ),
+                    ActionChoice(ActionId.CANCEL, "Cancel"),
+                ],
+                details=details,
+            )
+
+        if operation == "push" and cls._isNoCommitsToPush(combined):
+            return ActionOutcome(
+                title="Nothing to push yet",
+                message=(
+                    "This computer has no commits to send. "
+                    "Commit your files first, then Push will create the branch on Git."
+                ),
+                choices=[
+                    ActionChoice(ActionId.COMMIT, "Commit"),
                     ActionChoice(ActionId.CANCEL, "Cancel"),
                 ],
                 details=details,
@@ -351,12 +366,21 @@ class ActionMapper:
         return any(marker in text for marker in markers)
 
     @staticmethod
+    def _isNoCommitsToPush(text: str) -> bool:
+        markers = (
+            "src refspec",
+            "does not match any",
+            "does not have any commits",
+            "has no commits",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
     def _isNonFastForward(text: str) -> bool:
         markers = (
             "non-fast-forward",
             "fetch first",
             "updates were rejected",
-            "failed to push some refs",
         )
         return any(marker in text for marker in markers)
 

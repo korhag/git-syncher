@@ -10,7 +10,7 @@ from app.core.git_service import GitService
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.restart import restartApp
 from app.core.store import VaultStore
-from app.models.account import VaultAccount
+from app.models.account import VaultAccount, findAccountByKey
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.busy import BusyOverlay
 from app.ui.dialogs import Dialogs
@@ -965,32 +965,38 @@ class DashboardView:
             value=initial_account_id or None,
             options=build_account_options(),
             expand=True,
+            dense=True,
         )
         name_field = ft.TextField(
             label="Display name",
             value=existing.name if existing else "",
             expand=True,
+            dense=True,
         )
         path_field = ft.TextField(
             label="Folder path",
             value=existing.path if existing else "",
             read_only=True,
             expand=True,
+            dense=True,
         )
         remote_field = ft.TextField(
             label="Remote URL (HTTPS)",
             value=existing.remote_url if existing else "",
             expand=True,
+            dense=True,
         )
         user_field = ft.TextField(
             label="Git username",
             value=existing.username if existing else "",
             expand=True,
+            dense=True,
         )
         email_field = ft.TextField(
             label="Git email",
             value=existing.email if existing else "",
             expand=True,
+            dense=True,
         )
         pat_field = ft.TextField(
             label="Personal Access Token (PAT)",
@@ -998,25 +1004,27 @@ class DashboardView:
             password=True,
             can_reveal_password=True,
             expand=True,
+            dense=True,
         )
         initial_branch = (existing.default_branch if existing else "") or ""
         branch_options: list[ft.DropdownOption] = []
-        if not initial_branch and not editing:
-            # Seed common names so empty remotes can be saved without Refresh.
-            for name in self.git.suggestBranchNames():
-                branch_options.append(ft.DropdownOption(key=name, text=name))
-            initial_branch = branch_options[0].key if branch_options else "main"
-        elif initial_branch:
+        if initial_branch:
             branch_options.append(
                 ft.DropdownOption(key=initial_branch, text=initial_branch)
             )
+        elif existing and existing.path:
+            for name in self.git.suggestBranchNames(existing.path):
+                branch_options.append(ft.DropdownOption(key=name, text=name))
+            if branch_options:
+                initial_branch = branch_options[0].key or "main"
         branch_field = ft.Dropdown(
             label="Default branch",
-            hint_text="Usually main — refresh loads remote branches (empty remotes use main)",
+            hint_text="Pick a folder or Refresh — new / empty remotes use main",
             value=initial_branch or None,
             options=branch_options,
             editable=True,
             expand=True,
+            dense=True,
         )
         init_checkbox = ft.Checkbox(
             label="Initialize Git if folder is not a repository",
@@ -1027,20 +1035,25 @@ class DashboardView:
         applying_account = {"active": False}
 
         def resolve_account(raw: str) -> Optional[VaultAccount]:
-            key = (raw or "").strip()
-            if not key:
-                return None
-            by_id = self.store.getAccount(key)
-            if by_id is not None:
-                return by_id
-            for account in self.store.accounts:
-                label = f"{account.label} ({account.username})"
-                if label == key or account.label == key:
-                    return account
-            return None
+            return findAccountByKey(self.store.accounts, raw)
 
-        def on_account_change(_e: ft.ControlEvent) -> None:
-            raw = (account_field.value or "").strip()
+        def apply_account_identity(account: VaultAccount) -> None:
+            selected_account_id["value"] = account.id
+            account_field.value = account.id
+            applying_account["active"] = True
+            try:
+                user_field.value = account.username
+                email_field.value = account.email
+            finally:
+                applying_account["active"] = False
+
+        def on_account_select(e: ft.ControlEvent) -> None:
+            raw = ""
+            control = getattr(e, "control", None)
+            if control is not None:
+                raw = (getattr(control, "value", None) or "").strip()
+            if not raw:
+                raw = (account_field.value or "").strip()
             if not raw:
                 selected_account_id["value"] = ""
                 self.page.update()
@@ -1050,14 +1063,7 @@ class DashboardView:
                 selected_account_id["value"] = ""
                 self.page.update()
                 return
-            selected_account_id["value"] = account.id
-            account_field.value = account.id
-            applying_account["active"] = True
-            try:
-                user_field.value = account.username
-                email_field.value = account.email
-            finally:
-                applying_account["active"] = False
+            apply_account_identity(account)
             self.page.update()
 
         def on_identity_edit(_e: ft.ControlEvent) -> None:
@@ -1079,7 +1085,7 @@ class DashboardView:
                 account_field.value = None
                 self.page.update()
 
-        account_field.on_change = on_account_change
+        account_field.on_select = on_account_select
         user_field.on_change = on_identity_edit
         email_field.on_change = on_identity_edit
 
@@ -1143,9 +1149,12 @@ class DashboardView:
                     name_field.value = selected.replace("\\", "/").rstrip("/").split("/")[-1]
                 if self.git.isRepo(selected):
                     remote_field.value = self.git.detectRemoteUrl(selected) or remote_field.value
-                    branch = self.git.detectBranch(selected)
-                    if branch:
-                        ensure_branch_option(branch)
+                    names = self.git.suggestBranchNames(selected)
+                    if names:
+                        branch_field.options = [
+                            ft.DropdownOption(key=name, text=name) for name in names
+                        ]
+                        branch_field.value = names[0]
                     uname, uemail = self.git.detectLocalUser(selected)
                     if uname and not user_field.value:
                         user_field.value = uname
@@ -1155,6 +1164,10 @@ class DashboardView:
                     init_checkbox.visible = False
                 else:
                     init_checkbox.visible = True
+                    branch_field.options = [
+                        ft.DropdownOption(key="main", text="main")
+                    ]
+                    branch_field.value = "main"
                 clear_note()
                 note_existing_if_any()
                 self.page.update()
@@ -1207,8 +1220,7 @@ class DashboardView:
                     remote_default = branches[0] if branches else "main"
                     set_info(
                         "Remote has no branches yet — using "
-                        f"{remote_default} for the first push "
-                        "(you can type main or master)."
+                        f"{remote_default} for the first push."
                     )
                 else:
                     clear_note()
@@ -1293,7 +1305,7 @@ class DashboardView:
                 """Return (switch_outcome_or_None, error_message_or_None)."""
                 if not self.git.isRepo(path):
                     if should_init:
-                        outcome = self.git.initRepo(path)
+                        outcome = self.git.initRepo(path, branch_value)
                         if not outcome.success:
                             return None, outcome.message or outcome.title
                     else:
@@ -1379,11 +1391,14 @@ class DashboardView:
             on_click=refresh_branches,
             width=trailing_slot_width,
         )
+        win_h = int(getattr(self.page.window, "height", None) or 860)
+        content_h = max(380, min(int(win_h * 0.68), win_h - 220))
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Edit project" if editing else "Add project"),
             content=ft.Container(
                 width=560,
+                height=content_h,
                 content=ft.Column(
                     [
                         field_row(account_field),
@@ -1399,7 +1414,7 @@ class DashboardView:
                     ],
                     tight=True,
                     scroll=ft.ScrollMode.AUTO,
-                    height=560,
+                    expand=True,
                 ),
             ),
             actions=[

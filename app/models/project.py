@@ -123,6 +123,8 @@ class ProjectStatus:
     remote_default_branch: str = ""
     diverges_from_default: bool = False
     upstream_missing: bool = False
+    remote_empty: bool = False
+    has_local_commits: bool = False
     ahead: int = 0
     behind: int = 0
     dirty: bool = False
@@ -203,6 +205,7 @@ class ProjectStatus:
         needs = (
             self.diverges_from_default
             or self.upstream_missing
+            or self.remote_empty
             or bool(self.ahead and self.behind)
             or self.suggested_action
             in (SuggestedAction.MERGE, SuggestedAction.RESOLVE)
@@ -211,8 +214,13 @@ class ProjectStatus:
             return []
 
         local_branch = self.branch or "…"
-        git_branch = self.comparedGitBranch() or "…"
         local_ver = f" · v{self.changelog_version}" if self.changelog_version else ""
+        if self.remote_empty:
+            return [
+                f"This computer: {local_branch}{local_ver}",
+                "Git: empty (no branches yet)",
+            ]
+        git_branch = self.comparedGitBranch() or "…"
         git_ver = (
             f" · v{self.git_changelog_version}" if self.git_changelog_version else ""
         )
@@ -387,6 +395,26 @@ class ProjectStatus:
                 noun = "file" if count == 1 else "files"
                 lines.append(
                     f"{count} {noun} changed on this computer (not saved to Git yet)"
+                )
+            return lines
+
+        if self.remote_empty:
+            if self.dirty or not self.has_local_commits:
+                count = len(self.changes)
+                if self.dirty and count:
+                    noun = "file" if count == 1 else "files"
+                    lines.append(
+                        f"{count} {noun} on this computer — Git has no commits yet. "
+                        "Commit, then Push will create the branch."
+                    )
+                else:
+                    lines.append(
+                        "Git has no commits yet — Commit, then Push will create the branch."
+                    )
+            else:
+                lines.append(
+                    f"Git has no origin/{self.branch or '…'} yet — "
+                    "Push will create it."
                 )
             return lines
 

@@ -259,10 +259,26 @@ class ProjectDetailView:
     @staticmethod
     def _suggestionHint(status: ProjectStatus) -> str:
         if status.suggested_action == SuggestedAction.COMMIT:
+            if status.remote_empty:
+                count = len(status.changes)
+                if status.dirty and count:
+                    noun = "file" if count == 1 else "files"
+                    return (
+                        f"{count} {noun} on this computer — Git has no commits yet. "
+                        "Commit, then Push will create the branch."
+                    )
+                return (
+                    "Git has no commits yet — Commit, then Push will create the branch."
+                )
             count = len(status.changes)
             noun = "file" if count == 1 else "files"
             return f"{count} {noun} changed on this computer — save them with Commit."
         if status.suggested_action == SuggestedAction.PUSH:
+            if status.remote_empty or (status.upstream_missing and status.ahead == 0):
+                return (
+                    f"Git has no origin/{status.branch or '…'} yet — "
+                    "Push will create it."
+                )
             noun = "commit" if status.ahead == 1 else "commits"
             return (
                 f"This computer has {status.ahead} {noun} that Git does not have yet — "
@@ -451,6 +467,43 @@ class ProjectDetailView:
         if self.project and not current:
             current = self.git.detectBranch(self.project.path)
 
+        if self.status and self.status.remote_empty:
+            branch = current or "this branch"
+            if self.status.dirty or not self.status.has_local_commits:
+                message = (
+                    "Git has no commits yet. "
+                    "Next: Commit these files, then Push will create the branch on Git."
+                )
+                choices = [
+                    ActionChoice(ActionId.COMMIT, "Commit"),
+                    ActionChoice(
+                        ActionId.FIRST_PUSH,
+                        "Send this branch to Git",
+                        description=f"Create {branch} on the remote (first push).",
+                    ),
+                    ActionChoice(ActionId.CANCEL, "Cancel"),
+                ]
+            else:
+                message = (
+                    f"Git has no origin/{branch} yet. "
+                    "Next: Push will create this branch on Git."
+                )
+                choices = [
+                    ActionChoice(
+                        ActionId.FIRST_PUSH,
+                        "Send this branch to Git",
+                        description=f"Create {branch} on the remote (first push).",
+                    ),
+                    ActionChoice(ActionId.CANCEL, "Cancel"),
+                ]
+            outcome = ActionOutcome(
+                title="First push",
+                message=message,
+                choices=choices,
+            )
+            self._handleOutcome(outcome, retry=self._openResolveHelp)
+            return
+
         if (
             current
             and remote_default
@@ -602,6 +655,10 @@ class ProjectDetailView:
         project = self.project
         if not project:
             return
+        if not set_upstream and self.status and (
+            self.status.upstream_missing or self.status.remote_empty
+        ):
+            set_upstream = True
 
         def run_push(create_tag_version: Optional[str] = None) -> None:
             def work() -> tuple[ActionOutcome, Optional[ActionOutcome], Optional[ActionOutcome]]:
@@ -801,6 +858,9 @@ class ProjectDetailView:
         if action_id == ActionId.FIRST_PUSH:
             self.doPush(force=False, set_upstream=True)
             return
+        if action_id == ActionId.COMMIT:
+            self.doCommit()
+            return
         if not project:
             return
         if action_id == ActionId.STASH_THEN_PULL:
@@ -847,7 +907,7 @@ class ProjectDetailView:
             return
         if action_id == ActionId.INIT_REPO:
             def init_work() -> ActionOutcome:
-                return self.git.initRepo(project.path)
+                return self.git.initRepo(project.path, project.default_branch)
 
             def init_done(
                 outcome: Optional[ActionOutcome],

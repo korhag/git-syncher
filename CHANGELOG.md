@@ -5,6 +5,17 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.2] - 2026-09-02
+
+### Fixed
+
+- Empty Git remotes (no branches yet) suggest **Commit** then **Push**, instead of **Resolve**
+- First Push uses `git push -u` and no longer deadlocks on `--force-with-lease` when Git has no branch to overwrite
+- Pushing with no local commits asks you to commit first, instead of claiming the remote already has work
+- New / empty remotes use **main** (not master) unless the folder already has a real local branch
+- Add/Edit project dialog is taller and scrollable so the Initialize checkbox and status text stay reachable
+- Account picker uses the Flet select event so Git username and email fill as soon as you pick an account
+
 ## [1.12.1] - 2026-08-18
 
 ### Changed

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any
+from typing import Any, Optional, Sequence
 
 
 # ------------------------------------------------------------
@@ -34,3 +34,30 @@ class VaultAccount:
             username=str(data.get("username", "")),
             email=str(data.get("email", "")),
         )
+
+    # --------------------------------------------------------
+    # Method: identity
+    # Purpose: Username and email to copy into a project.
+    # --------------------------------------------------------
+    def identity(self) -> tuple[str, str]:
+        return self.username, self.email
+
+
+# ------------------------------------------------------------
+# Function: findAccountByKey
+# Purpose: Resolve a dropdown value (id, label, or "label (user)").
+# ------------------------------------------------------------
+def findAccountByKey(
+    accounts: Sequence[VaultAccount],
+    raw: str,
+) -> Optional[VaultAccount]:
+    key = (raw or "").strip()
+    if not key:
+        return None
+    for account in accounts:
+        if account.id == key:
+            return account
+        label = f"{account.label} ({account.username})"
+        if label == key or account.label == key:
+            return account
+    return None

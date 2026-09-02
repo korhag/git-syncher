@@ -2,4 +2,4 @@
 # Package: app
 # Purpose: Git Syncher desktop application root package.
 # ------------------------------------------------------------
-__version__ = "1.12.1"
+__version__ = "1.12.2"
