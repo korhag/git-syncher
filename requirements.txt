@@ -1,0 +1,5 @@
+# Flet 0.80+ provides ft.run, page.show_dialog, and FilePicker services.
+# Python 3.9 can only install Flet 0.28, which cannot launch this app.
+flet[all]>=0.80.0
+cryptography>=42.0.0
+pytest>=8.0.0

@@ -1,0 +1,1601 @@
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+from typing import Callable, Optional
+
+import flet as ft
+
+from app.core.actions import ActionChoice, ActionId, ActionOutcome
+from app.core.folder_picker import expandFolderPath, pickDirectory
+from app.core.git_service import GitService
+from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
+from app.core.restart import restartApp
+from app.core.store import VaultStore
+from app.models.account import VaultAccount, findAccountByKey
+from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
+from app.ui.busy import BusyOverlay
+from app.ui.dialogs import Dialogs
+from app.ui.layout import dialogHeight, dialogWidth
+from app import __version__
+
+
+# Action chip colors / labels
+_ACTION_META: dict[SuggestedAction, tuple[str, str]] = {
+    SuggestedAction.SYNCED: ("Synced", ft.Colors.GREEN_400),
+    SuggestedAction.COMMIT: ("Commit", ft.Colors.AMBER_400),
+    SuggestedAction.PUSH: ("Push", ft.Colors.BLUE_400),
+    SuggestedAction.PULL: ("Pull", ft.Colors.CYAN_400),
+    SuggestedAction.MERGE: ("Merge", ft.Colors.ORANGE_400),
+    SuggestedAction.RESOLVE: ("Resolve", ft.Colors.ORANGE_400),
+    SuggestedAction.NOT_A_REPO: ("Init Git", ft.Colors.GREY_400),
+    SuggestedAction.MISSING_PATH: ("Missing", ft.Colors.RED_400),
+    SuggestedAction.UNKNOWN: ("Check", ft.Colors.GREY_400),
+}
+
+
+# ------------------------------------------------------------
+# Class: DashboardView
+# Purpose: Project cards, Refresh all, and Add project entry.
+# ------------------------------------------------------------
+class DashboardView:
+    # --------------------------------------------------------
+    # Method: __init__
+    # Purpose: Wire store, git service, and navigation callbacks.
+    # --------------------------------------------------------
+    def __init__(
+        self,
+        page: ft.Page,
+        store: VaultStore,
+        git: GitService,
+        busy: BusyOverlay,
+        on_open_project: Callable[[str], None],
+        on_lock: Callable[[], None],
+    ) -> None:
+        self.page = page
+        self.store = store
+        self.git = git
+        self.busy = busy
+        self.on_open_project = on_open_project
+        self.on_lock = on_lock
+        self.statuses: dict[str, ProjectStatus] = {}
+        self.list_column = ft.Column(spacing=6, expand=True, scroll=ft.ScrollMode.AUTO)
+        self.status_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.refresh_button = ft.FilledButton(
+            "Refresh",
+            icon=ft.Icons.REFRESH,
+            on_click=lambda _e: self.refreshAll(),
+        )
+
+    # --------------------------------------------------------
+    # Method: build
+    # Purpose: Construct the dashboard layout.
+    # --------------------------------------------------------
+    def build(self) -> ft.Control:
+        header = ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.SYNC, color=ft.Colors.PRIMARY),
+                        ft.Text("Git Syncher", size=22, weight=ft.FontWeight.BOLD),
+                    ],
+                    spacing=8,
+                ),
+                ft.Row(
+                    [
+                        self.status_text,
+                        self.refresh_button,
+                        ft.OutlinedButton(
+                            "Accounts",
+                            icon=ft.Icons.PERSON,
+                            on_click=lambda _e: self.openManageAccountsDialog(),
+                        ),
+                        ft.OutlinedButton(
+                            "Add project",
+                            icon=ft.Icons.ADD,
+                            on_click=lambda _e: self.openAddProjectDialog(),
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.RESTART_ALT,
+                            tooltip="Restart Git Syncher",
+                            on_click=lambda _e: self._confirmRestart(),
+                        ),
+                        ft.IconButton(
+                            icon=ft.Icons.LOCK,
+                            tooltip="Lock vault",
+                            on_click=lambda _e: self.on_lock(),
+                        ),
+                    ],
+                    spacing=8,
+                    wrap=True,
+                    run_spacing=8,
+                ),
+            ],
+            spacing=8,
+            tight=True,
+        )
+
+        self._rebuildCards()
+        footer = ft.Row(
+            [
+                ft.Container(expand=True),
+                ft.Text(
+                    f"v{__version__}",
+                    size=11,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.END,
+        )
+        return ft.Container(
+            expand=True,
+            padding=12,
+            content=ft.Column(
+                [
+                    header,
+                    ft.Divider(),
+                    self.list_column,
+                    footer,
+                ],
+                expand=True,
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Method: _confirmRestart
+    # Purpose: Confirm, then relaunch via run.bat / run.sh and exit.
+    # --------------------------------------------------------
+    def _confirmRestart(self) -> None:
+        def do_restart() -> None:
+            if not restartApp(self.page):
+                Dialogs.showSnack(
+                    self.page,
+                    "Could not find run.bat / run.sh next to the app.",
+                    error=True,
+                )
+
+        Dialogs.showYesNo(
+            self.page,
+            title="Restart Git Syncher?",
+            message=(
+                "This closes the app and starts it again "
+                "(run.bat on Windows, run.sh on Linux/macOS)."
+            ),
+            confirm_label="Restart",
+            on_confirm=do_restart,
+        )
+
+    # --------------------------------------------------------
+    # Method: refreshAll
+    # Purpose: Re-query Git status for every saved project.
+    # --------------------------------------------------------
+    def refreshAll(self) -> None:
+        if not self.git.isGitAvailable():
+            Dialogs.showSnack(self.page, "Git is not installed or not on PATH.", error=True)
+            return
+
+        def work() -> dict[str, ProjectStatus]:
+            return self.git.refreshAll(self.store.projects, fetch=True)
+
+        def done(
+            result: Optional[dict[str, ProjectStatus]],
+            error: Optional[BaseException],
+        ) -> None:
+            self.refresh_button.disabled = False
+            if error is not None:
+                self.status_text.value = "Refresh failed"
+                Dialogs.showSnack(self.page, str(error), error=True)
+                self._rebuildCards()
+                self.page.update()
+                return
+            self.statuses = result or {}
+            # Persist vault (e.g. remote URL detections); do not rewrite default_branch.
+            try:
+                self.store.save()
+            except Exception:
+                pass
+            count = len(self.store.projects)
+            self.status_text.value = f"Updated {count} project{'s' if count != 1 else ''}"
+            self._rebuildCards()
+            self.page.update()
+
+        self.refresh_button.disabled = True
+        self.status_text.value = "Refreshing…"
+        self.page.update()
+        if not self.busy.runOrSnack("Refreshing…", work, on_done=done):
+            self.refresh_button.disabled = False
+            self.page.update()
+
+    # --------------------------------------------------------
+    # Method: _rebuildCards
+    # Purpose: Render project cards from store + statuses.
+    # --------------------------------------------------------
+    def _rebuildCards(self) -> None:
+        self.list_column.controls.clear()
+        if not self.store.projects:
+            self.list_column.controls.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Icon(ft.Icons.FOLDER_OFF_OUTLINED, size=48, color=ft.Colors.OUTLINE),
+                            ft.Text("No projects yet", size=18, weight=ft.FontWeight.W_500),
+                            ft.Text(
+                                "Add a folder to start tracking Git status in one place.",
+                                color=ft.Colors.ON_SURFACE_VARIANT,
+                            ),
+                            ft.FilledButton(
+                                "Add project",
+                                icon=ft.Icons.ADD,
+                                on_click=lambda _e: self.openAddProjectDialog(),
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
+                    alignment=ft.Alignment.CENTER,
+                    padding=40,
+                )
+            )
+            return
+
+        for project in self.store.projects:
+            status = self.statuses.get(project.id)
+            self.list_column.controls.append(self._buildCard(project, status))
+
+    # --------------------------------------------------------
+    # Method: _buildCard
+    # Purpose: Compact two-line project row using horizontal space.
+    # --------------------------------------------------------
+    def _buildCard(
+        self,
+        project: ProjectConfig,
+        status: Optional[ProjectStatus],
+    ) -> ft.Control:
+        action = status.suggested_action if status else SuggestedAction.UNKNOWN
+        label, color = _ACTION_META.get(action, ("Check", ft.Colors.GREY_400))
+
+        branch_name = ""
+        status_sentence = "Not refreshed yet"
+        compare_lines: list[str] = []
+        if status:
+            compare_lines = status.dashboardCompareLines()
+            lines = status.plainStatusLines()
+            body_lines: list[str] = []
+            for line in lines:
+                if line.startswith("Branch: "):
+                    branch_name = line[len("Branch: ") :].strip()
+                else:
+                    body_lines.append(line)
+            if status.branch and not branch_name:
+                branch_name = status.branch
+            status_sentence = " · ".join(body_lines) if body_lines else status.summaryLabel()
+
+        def open_detail(_e: ft.ControlEvent, pid: str = project.id) -> None:
+            self.on_open_project(pid)
+
+        def quick_action(_e: ft.ControlEvent, pid: str = project.id) -> None:
+            if action == SuggestedAction.MERGE:
+                self.openMergeDialog(pid)
+            else:
+                self.on_open_project(pid)
+
+        def open_folder(_e: ft.ControlEvent, folder: str = project.path) -> None:
+            if not openFolderInExplorer(folder):
+                Dialogs.showSnack(
+                    self.page,
+                    "Could not open folder. Check that the path still exists.",
+                    error=True,
+                )
+
+        remote = ""
+        if status and status.remote_url:
+            remote = status.remote_url
+        elif project.remote_url:
+            remote = project.remote_url
+
+        globe_branch = (
+            branch_name
+            or (status.branch if status else "")
+            or project.default_branch
+            or ""
+        )
+
+        def open_remote(
+            _e: ft.ControlEvent,
+            url: str = remote,
+            branch: str = globe_branch,
+        ) -> None:
+            if not openRemoteInBrowser(url, branch=branch):
+                Dialogs.showSnack(
+                    self.page,
+                    "No remote URL set — open project settings and add the repo URL.",
+                    error=True,
+                )
+
+        def edit_project(_e: ft.ControlEvent, proj: ProjectConfig = project) -> None:
+            self.openAddProjectDialog(existing=proj)
+
+        def remove_project(_e: ft.ControlEvent, proj: ProjectConfig = project) -> None:
+            self._confirmRemoveProject(proj)
+
+        title_row_controls: list[ft.Control] = [
+            ft.Text(
+                project.name,
+                size=15,
+                weight=ft.FontWeight.W_600,
+                expand=True,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            ),
+        ]
+        if branch_name:
+            title_row_controls.append(
+                ft.Container(
+                    content=ft.Text(branch_name, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    border_radius=10,
+                )
+            )
+
+        action_row = ft.Row(
+            [
+                ft.IconButton(
+                    icon=ft.Icons.FOLDER_OPEN,
+                    tooltip="Open folder in Explorer",
+                    icon_size=18,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=open_folder,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.PUBLIC,
+                    tooltip="Open Git repo in browser",
+                    icon_size=18,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=open_remote,
+                    disabled=not bool(remote),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.EDIT_OUTLINED,
+                    tooltip="Edit project",
+                    icon_size=18,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=edit_project,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    tooltip="Remove from Syncher",
+                    icon_size=18,
+                    icon_color=ft.Colors.RED_400,
+                    style=ft.ButtonStyle(padding=4),
+                    on_click=remove_project,
+                ),
+                ft.Container(
+                    content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                    border=ft.Border.all(1, color),
+                    border_radius=16,
+                    on_click=quick_action,
+                ),
+                ft.Icon(ft.Icons.CHEVRON_RIGHT, size=18),
+            ],
+            spacing=4,
+            wrap=True,
+            run_spacing=4,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        if compare_lines:
+            status_block: ft.Control = ft.Column(
+                [
+                    ft.Text(
+                        line,
+                        size=12,
+                        max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    )
+                    for line in compare_lines
+                ],
+                spacing=0,
+                tight=True,
+            )
+        else:
+            status_block = ft.Text(
+                status_sentence,
+                size=12,
+                max_lines=2,
+                overflow=ft.TextOverflow.ELLIPSIS,
+            )
+
+        return ft.Card(
+            content=ft.Container(
+                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                ink=True,
+                on_click=open_detail,
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            title_row_controls,
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        action_row,
+                        ft.Text(
+                            project.path,
+                            size=11,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                            max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                        status_block,
+                    ],
+                    spacing=6,
+                    tight=True,
+                ),
+            )
+        )
+
+    # --------------------------------------------------------
+    # Method: _confirmRemoveProject
+    # Purpose: Confirm, then drop a Syncher entry (not disk files).
+    # --------------------------------------------------------
+    def _confirmRemoveProject(self, project: ProjectConfig) -> None:
+        def confirm() -> None:
+            self.store.removeProject(project.id)
+            self.statuses.pop(project.id, None)
+            Dialogs.showSnack(self.page, "Project removed from Syncher")
+            self._rebuildCards()
+            self.page.update()
+
+        Dialogs.showYesNo(
+            self.page,
+            title="Remove project?",
+            message=(
+                f"Remove “{project.name}” from Git Syncher?\n"
+                "This does not delete files on disk — only the Syncher entry and stored PAT."
+            ),
+            confirm_label="Remove",
+            on_confirm=confirm,
+        )
+
+    # --------------------------------------------------------
+    # Method: openMergeDialog
+    # Purpose: Pick merge direction (bring Git vs send to Git).
+    # --------------------------------------------------------
+    def openMergeDialog(self, project_id: str) -> None:
+        project = next((p for p in self.store.projects if p.id == project_id), None)
+        if not project:
+            return
+        status = self.statuses.get(project_id)
+        if status is None:
+            status = ProjectStatus(project_id=project_id, is_repo=True, path_exists=True)
+            status.branch = self.git.detectBranch(project.path)
+            status.remote_default_branch = self.git.detectRemoteDefaultBranch(project.path)
+            if (
+                status.branch
+                and status.remote_default_branch
+                and status.branch != status.remote_default_branch
+            ):
+                status.diverges_from_default = True
+        current = status.branch or self.git.detectBranch(project.path)
+        compared = status.comparedGitBranch() or (
+            self.git.detectRemoteDefaultBranch(project.path) or current
+        )
+        if not status.branch and current:
+            status.branch = current
+        explain = status.mergeExplain()
+
+        outcome = ActionOutcome(
+            title="Merge",
+            message=explain["body"],
+            choices=[
+                ActionChoice(
+                    ActionId.MERGE_BRING_REMOTE,
+                    explain["bring_label"],
+                    description=explain["bring_description"],
+                ),
+                ActionChoice(
+                    ActionId.MERGE_SEND_TO_REMOTE,
+                    explain["send_label"],
+                    description=explain["send_description"],
+                ),
+                ActionChoice(
+                    ActionId.MATCH_REMOTE,
+                    "Make this computer match Git",
+                    description=explain["match_description"],
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(
+                    ActionId.OVERWRITE_REMOTE,
+                    "Overwrite remote",
+                    description=explain["overwrite_description"],
+                    destructive=True,
+                    requires_confirm=True,
+                ),
+                ActionChoice(ActionId.CANCEL, "Cancel"),
+            ],
+        )
+
+        def on_choice(action_id: ActionId) -> None:
+            self._dispatchMergeChoice(project, compared, action_id, explain)
+
+        Dialogs.showChoice(self.page, outcome, on_choice)
+
+    # --------------------------------------------------------
+    # Method: _dispatchMergeChoice
+    # Purpose: Run merge / destructive resolve from the dashboard dialog.
+    # --------------------------------------------------------
+    def _dispatchMergeChoice(
+        self,
+        project: ProjectConfig,
+        compared: str,
+        action_id: ActionId,
+        explain: Optional[dict[str, str]] = None,
+    ) -> None:
+        if action_id == ActionId.CANCEL:
+            return
+
+        current = self.git.detectBranch(project.path) or "…"
+        text = explain or {}
+
+        if action_id == ActionId.MERGE_BRING_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title=text.get("bring_label", "Merge Git → this computer?"),
+                message=text.get(
+                    "bring_confirm",
+                    f"Merge Git {compared} into this computer’s {current}.",
+                ),
+                confirm_label="Merge",
+                on_confirm=lambda: self._runMergeBring(project, compared),
+            )
+            return
+
+        if action_id == ActionId.MERGE_SEND_TO_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title=text.get("send_label", "Merge this computer → Git?"),
+                message=text.get(
+                    "send_confirm",
+                    f"Merge {current} into Git {compared}, then push.",
+                ),
+                confirm_label="Merge and push",
+                on_confirm=lambda: self._runMergeSend(project, compared),
+            )
+            return
+
+        if action_id == ActionId.MATCH_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Make this computer match Git?",
+                message=text.get(
+                    "match_description",
+                    "This deletes local commits and uncommitted files on this computer. "
+                    "Git online is not changed.",
+                ),
+                confirm_label="Match Git",
+                on_confirm=lambda: self._runMatchRemote(project),
+            )
+            return
+
+        if action_id == ActionId.OVERWRITE_REMOTE:
+            Dialogs.showConfirm(
+                self.page,
+                title="Overwrite remote?",
+                message=text.get(
+                    "overwrite_description",
+                    "This force-pushes your local branch and can erase commits on the remote. "
+                    "Only continue if you are sure.",
+                ),
+                confirm_label="Overwrite remote",
+                on_confirm=lambda: self._runOverwriteRemote(project),
+            )
+            return
+
+    def _runMergeBring(self, project: ProjectConfig, compared: str) -> None:
+        def work() -> ActionOutcome:
+            return self.git.mergeBringRemote(project, compared)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(
+                    self.page,
+                    outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                )
+                self.refreshAll()
+                return
+            Dialogs.showChoice(
+                self.page,
+                outcome,
+                lambda aid: self._onMergeFailureChoice(project, aid),
+            )
+            self.refreshAll()
+
+        self.busy.runOrSnack("Merging…", work, on_done=done)
+
+    def _runMergeSend(self, project: ProjectConfig, compared: str) -> None:
+        def work() -> ActionOutcome:
+            return self.git.mergeSendToRemote(project, compared)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(
+                    self.page,
+                    outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                )
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.refreshAll()
+                return
+            Dialogs.showChoice(
+                self.page,
+                outcome,
+                lambda aid: self._onMergeFailureChoice(project, aid),
+            )
+            self.refreshAll()
+
+        self.busy.runOrSnack("Merging and pushing…", work, on_done=done)
+
+    def _runMatchRemote(self, project: ProjectConfig) -> None:
+        def work() -> ActionOutcome:
+            return self.git.resetToRemote(project)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(self.page, outcome.title)
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.refreshAll()
+                return
+            Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+
+        self.busy.runOrSnack("Matching Git…", work, on_done=done)
+
+    def _runOverwriteRemote(self, project: ProjectConfig) -> None:
+        def work() -> ActionOutcome:
+            return self.git.push(project, force=True)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            if outcome.success:
+                Dialogs.showSnack(
+                    self.page,
+                    outcome.title + (f" — {outcome.message}" if outcome.message else ""),
+                )
+                self.refreshAll()
+                return
+            Dialogs.showSnack(self.page, outcome.message or outcome.title, error=True)
+
+        self.busy.runOrSnack("Overwriting remote…", work, on_done=done)
+
+    def _onMergeFailureChoice(self, project: ProjectConfig, action_id: ActionId) -> None:
+        if action_id == ActionId.VIEW_DIFFS:
+            self.on_open_project(project.id)
+            return
+        if action_id == ActionId.CANCEL:
+            return
+        if action_id == ActionId.OPEN_SETTINGS:
+            self.openAddProjectDialog(existing=project)
+            return
+        if action_id == ActionId.RETRY:
+            self.openMergeDialog(project.id)
+            return
+
+    # --------------------------------------------------------
+    # Method: openManageAccountsDialog
+    # Purpose: List, add, edit, and remove saved Git identities.
+    # --------------------------------------------------------
+    def openManageAccountsDialog(self) -> None:
+        list_column = ft.Column(
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+            height=dialogHeight(self.page, preferred=280),
+        )
+        empty_hint = ft.Text(
+            "No saved accounts yet. Add one to autofill Git username and email "
+            "when creating projects.",
+            size=13,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+        )
+
+        def rebuild_list() -> None:
+            list_column.controls.clear()
+            if not self.store.accounts:
+                list_column.controls.append(empty_hint)
+                return
+            for account in self.store.accounts:
+                def edit_account(
+                    _e: ft.ControlEvent,
+                    acc: VaultAccount = account,
+                ) -> None:
+                    open_account_form(acc)
+
+                def remove_account(
+                    _e: ft.ControlEvent,
+                    acc: VaultAccount = account,
+                ) -> None:
+                    def confirm() -> None:
+                        self.store.removeAccount(acc.id)
+                        Dialogs.showSnack(self.page, f"Removed account “{acc.label}”")
+                        rebuild_list()
+                        self.page.update()
+
+                    Dialogs.showYesNo(
+                        self.page,
+                        title="Remove account?",
+                        message=(
+                            f"Remove “{acc.label}” from saved Git accounts?\n"
+                            "Existing projects keep their username and email."
+                        ),
+                        confirm_label="Remove",
+                        on_confirm=confirm,
+                    )
+
+                list_column.controls.append(
+                    ft.Container(
+                        padding=10,
+                        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                        border_radius=8,
+                        content=ft.Row(
+                            [
+                                ft.Column(
+                                    [
+                                        ft.Text(
+                                            account.label,
+                                            weight=ft.FontWeight.W_600,
+                                            size=14,
+                                        ),
+                                        ft.Text(
+                                            f"{account.username} · {account.email}",
+                                            size=12,
+                                            color=ft.Colors.ON_SURFACE_VARIANT,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.EDIT,
+                                    tooltip="Edit account",
+                                    on_click=edit_account,
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.DELETE_OUTLINE,
+                                    tooltip="Remove account",
+                                    on_click=remove_account,
+                                ),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                    )
+                )
+
+        def open_account_form(existing: Optional[VaultAccount] = None) -> None:
+            editing = existing is not None
+            label_field = ft.TextField(
+                label="Label",
+                value=existing.label if existing else "",
+                hint_text="e.g. Work GitHub",
+            )
+            user_field = ft.TextField(
+                label="Git username",
+                value=existing.username if existing else "",
+            )
+            email_field = ft.TextField(
+                label="Git email",
+                value=existing.email if existing else "",
+            )
+            form_error = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+            def close_form() -> None:
+                self.page.pop_dialog()
+
+            def save_account(_e: ft.ControlEvent) -> None:
+                label = (label_field.value or "").strip()
+                username = (user_field.value or "").strip()
+                email = (email_field.value or "").strip()
+                try:
+                    if editing and existing is not None:
+                        account = VaultAccount(
+                            id=existing.id,
+                            label=label,
+                            username=username,
+                            email=email,
+                        )
+                        self.store.updateAccount(account)
+                        snack = "Account updated"
+                    else:
+                        account = VaultAccount(
+                            id=str(uuid.uuid4()),
+                            label=label,
+                            username=username,
+                            email=email,
+                        )
+                        self.store.addAccount(account)
+                        snack = "Account added"
+                except ValueError as exc:
+                    form_error.value = str(exc)
+                    self.page.update()
+                    return
+                except KeyError as exc:
+                    form_error.value = str(exc)
+                    self.page.update()
+                    return
+
+                # Pop the form before the snack — showSnack uses show_dialog
+                # and would otherwise steal the dialog stack.
+                close_form()
+                rebuild_list()
+                Dialogs.showSnack(self.page, snack)
+                self.page.update()
+
+            form_dialog = ft.AlertDialog(
+                modal=True,
+                scrollable=True,
+                title=ft.Text("Edit account" if editing else "Add account"),
+                content=ft.Container(
+                    width=dialogWidth(self.page, preferred=400),
+                    content=ft.Column(
+                        [label_field, user_field, email_field, form_error],
+                        tight=True,
+                        spacing=10,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=lambda _e: close_form()),
+                    ft.FilledButton(
+                        "Save",
+                        on_click=save_account,
+                    ),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            self.page.show_dialog(form_dialog)
+
+        def close() -> None:
+            self.page.pop_dialog()
+
+        rebuild_list()
+        dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Text("Git accounts"),
+            content=ft.Container(
+                width=dialogWidth(self.page, preferred=480),
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Saved identities autofill Git username and email "
+                            "when you add or edit a project.",
+                            size=13,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                        ),
+                        list_column,
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Close", on_click=lambda _e: close()),
+                ft.OutlinedButton(
+                    "Add account",
+                    icon=ft.Icons.ADD,
+                    on_click=lambda _e: open_account_form(),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.show_dialog(dialog)
+
+    # --------------------------------------------------------
+    # Method: openAddProjectDialog
+    # Purpose: Folder picker + Git settings form.
+    # --------------------------------------------------------
+    def openAddProjectDialog(self, existing: Optional[ProjectConfig] = None) -> None:
+        editing = existing is not None
+        # Fixed trailing slot so rows with/without icon buttons share one width.
+        trailing_slot_width = 40
+
+        def field_row(
+            field: ft.Control,
+            trailing: Optional[ft.Control] = None,
+        ) -> ft.Row:
+            end = trailing if trailing is not None else ft.Container(
+                width=trailing_slot_width
+            )
+            return ft.Row(
+                [field, end],
+                spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+        def build_account_options() -> list[ft.DropdownOption]:
+            options: list[ft.DropdownOption] = [
+                ft.DropdownOption(key="", text="(Manual)")
+            ]
+            for account in self.store.accounts:
+                options.append(
+                    ft.DropdownOption(
+                        key=account.id,
+                        text=f"{account.label} ({account.username})",
+                    )
+                )
+            return options
+
+        def find_matching_account_id(username: str, email: str) -> str:
+            user = (username or "").strip()
+            mail = (email or "").strip()
+            for account in self.store.accounts:
+                if account.username == user and account.email == mail:
+                    return account.id
+            return ""
+
+        initial_account_id = ""
+        if existing:
+            initial_account_id = find_matching_account_id(
+                existing.username,
+                existing.email,
+            )
+
+        selected_account_id = {"value": initial_account_id}
+        account_field = ft.Dropdown(
+            label="Account picker",
+            hint_text="Fills Git username and email",
+            value=initial_account_id or None,
+            options=build_account_options(),
+            expand=True,
+            dense=True,
+        )
+        name_field = ft.TextField(
+            label="Display name",
+            value=existing.name if existing else "",
+            expand=True,
+            dense=True,
+        )
+        path_field = ft.TextField(
+            label="Folder path",
+            value=existing.path if existing else "",
+            hint_text="Type a path (e.g. ~/Projects/my-app) or Browse",
+            expand=True,
+            dense=True,
+        )
+        remote_field = ft.TextField(
+            label="Remote URL (HTTPS)",
+            value=existing.remote_url if existing else "",
+            expand=True,
+            dense=True,
+        )
+        user_field = ft.TextField(
+            label="Git username",
+            value=existing.username if existing else "",
+            expand=True,
+            dense=True,
+        )
+        email_field = ft.TextField(
+            label="Git email",
+            value=existing.email if existing else "",
+            expand=True,
+            dense=True,
+        )
+        pat_field = ft.TextField(
+            label="Personal Access Token (PAT)",
+            value=existing.pat if existing else "",
+            password=True,
+            can_reveal_password=True,
+            expand=True,
+            dense=True,
+        )
+        initial_branch = (existing.default_branch if existing else "") or ""
+        branch_options: list[ft.DropdownOption] = []
+        if initial_branch:
+            branch_options.append(
+                ft.DropdownOption(key=initial_branch, text=initial_branch)
+            )
+        elif existing and existing.path:
+            for name in self.git.suggestBranchNames(existing.path):
+                branch_options.append(ft.DropdownOption(key=name, text=name))
+            if branch_options:
+                initial_branch = branch_options[0].key or "main"
+        branch_field = ft.Dropdown(
+            label="Default branch",
+            hint_text="Pick a folder or Refresh — new / empty remotes use main",
+            value=initial_branch or None,
+            options=branch_options,
+            editable=True,
+            expand=True,
+            dense=True,
+        )
+        init_checkbox = ft.Checkbox(
+            label="Initialize Git if folder is not a repository",
+            value=False,
+            visible=not editing,
+        )
+        error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+        applying_account = {"active": False}
+        from_git = {"value": False}
+
+        this_computer_hint = (
+            "Publish this folder to Git. Initialize if it is not a repo yet."
+        )
+        from_git_hint = (
+            "Clone a Git repo into an empty folder on this computer."
+        )
+        mode_hint = ft.Text(
+            this_computer_hint,
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+        )
+
+        def apply_from_git_mode(enabled: bool) -> None:
+            from_git["value"] = enabled
+            init_checkbox.visible = (not enabled) and (not editing)
+            if enabled:
+                path_field.label = "Empty folder to clone into"
+                path_field.hint_text = "Must be empty — type a path or Browse"
+                branch_field.hint_text = (
+                    "Refresh loads remote branches, then clone that branch"
+                )
+                mode_hint.value = from_git_hint
+            else:
+                path_field.label = "Folder path"
+                path_field.hint_text = "Type a path (e.g. ~/Projects/my-app) or Browse"
+                branch_field.hint_text = (
+                    "Pick a folder or Refresh — new / empty remotes use main"
+                )
+                mode_hint.value = this_computer_hint
+
+        def on_mode_change(e: ft.ControlEvent) -> None:
+            idx = 0
+            control = getattr(e, "control", None)
+            if control is not None:
+                idx = int(getattr(control, "selected_index", 0) or 0)
+            apply_from_git_mode(idx == 1)
+            self.page.update()
+
+        def maybe_fill_name_from_url() -> None:
+            if editing or (name_field.value or "").strip():
+                return
+            derived = GitService.displayNameFromRemoteUrl(
+                (remote_field.value or "").strip()
+            )
+            if derived:
+                name_field.value = derived
+
+        def on_remote_change(_e: ft.ControlEvent) -> None:
+            maybe_fill_name_from_url()
+            self.page.update()
+
+        remote_field.on_change = on_remote_change
+
+        def resolve_account(raw: str) -> Optional[VaultAccount]:
+            return findAccountByKey(self.store.accounts, raw)
+
+        def apply_account_identity(account: VaultAccount) -> None:
+            selected_account_id["value"] = account.id
+            account_field.value = account.id
+            applying_account["active"] = True
+            try:
+                user_field.value = account.username
+                email_field.value = account.email
+            finally:
+                applying_account["active"] = False
+
+        def on_account_select(e: ft.ControlEvent) -> None:
+            raw = ""
+            control = getattr(e, "control", None)
+            if control is not None:
+                raw = (getattr(control, "value", None) or "").strip()
+            if not raw:
+                raw = (account_field.value or "").strip()
+            if not raw:
+                selected_account_id["value"] = ""
+                self.page.update()
+                return
+            account = resolve_account(raw)
+            if account is None:
+                selected_account_id["value"] = ""
+                self.page.update()
+                return
+            apply_account_identity(account)
+            self.page.update()
+
+        def on_identity_edit(_e: ft.ControlEvent) -> None:
+            if applying_account["active"]:
+                return
+            acc_id = selected_account_id["value"]
+            if not acc_id:
+                return
+            account = self.store.getAccount(acc_id)
+            if not account:
+                selected_account_id["value"] = ""
+                account_field.value = None
+                self.page.update()
+                return
+            current_user = (user_field.value or "").strip()
+            current_email = (email_field.value or "").strip()
+            if current_user != account.username or current_email != account.email:
+                selected_account_id["value"] = ""
+                account_field.value = None
+                self.page.update()
+
+        account_field.on_select = on_account_select
+        user_field.on_change = on_identity_edit
+        email_field.on_change = on_identity_edit
+
+        def set_error(message: str) -> None:
+            error_text.color = ft.Colors.RED_400
+            error_text.value = message
+
+        def set_info(message: str) -> None:
+            error_text.color = ft.Colors.ON_SURFACE_VARIANT
+            error_text.value = message
+
+        def clear_note() -> None:
+            error_text.color = ft.Colors.RED_400
+            error_text.value = ""
+
+        def note_existing_if_any() -> None:
+            if editing:
+                return
+            path = (path_field.value or "").strip()
+            branch = (branch_field.value or "").strip()
+            if not path or not branch:
+                return
+            dup = self.store.findDuplicate(path, branch)
+            if dup is not None:
+                set_info(
+                    f"Already on the dashboard as “{dup.name}” for {branch}. "
+                    "Save will update that card."
+                )
+
+        def ensure_branch_option(name: str) -> None:
+            name = (name or "").strip()
+            if not name:
+                return
+            existing_keys = {
+                (opt.key or opt.text or "")
+                for opt in (branch_field.options or [])
+            }
+            if name not in existing_keys:
+                branch_field.options = list(branch_field.options or []) + [
+                    ft.DropdownOption(key=name, text=name)
+                ]
+            branch_field.value = name
+
+        def apply_selected_path(selected: str) -> None:
+            selected = expandFolderPath(selected)
+            if not selected:
+                return
+            path_field.value = selected
+            if not (name_field.value or "").strip():
+                name_field.value = (
+                    selected.replace("\\", "/").rstrip("/").split("/")[-1]
+                )
+            if from_git["value"]:
+                init_checkbox.visible = False
+                if self.git.isRepo(selected):
+                    set_error(
+                        "This folder is already a Git repo. "
+                        "Use the This computer tab, or pick an empty folder."
+                    )
+                elif not self.git.isEmptyDirectory(selected):
+                    set_error("Choose an empty folder to clone into.")
+                else:
+                    clear_note()
+                note_existing_if_any()
+                self.page.update()
+                return
+            if self.git.isRepo(selected):
+                remote_field.value = self.git.detectRemoteUrl(selected) or remote_field.value
+                names = self.git.suggestBranchNames(selected)
+                if names:
+                    branch_field.options = [
+                        ft.DropdownOption(key=name, text=name) for name in names
+                    ]
+                    branch_field.value = names[0]
+                uname, uemail = self.git.detectLocalUser(selected)
+                if uname and not user_field.value:
+                    user_field.value = uname
+                if uemail and not email_field.value:
+                    email_field.value = uemail
+                init_checkbox.value = False
+                init_checkbox.visible = False
+            elif Path(selected).is_dir():
+                init_checkbox.visible = True
+                branch_field.options = [
+                    ft.DropdownOption(key="main", text="main")
+                ]
+                branch_field.value = "main"
+            clear_note()
+            note_existing_if_any()
+            self.page.update()
+
+        def commit_typed_path(_e: ft.ControlEvent) -> None:
+            raw = (path_field.value or "").strip()
+            if not raw:
+                return
+            apply_selected_path(raw)
+
+        path_field.on_blur = commit_typed_path
+        path_field.on_submit = commit_typed_path
+
+        def pick_folder(_e: ft.ControlEvent) -> None:
+            selected, error = pickDirectory(
+                title="Select project folder",
+                initial_directory=(path_field.value or "").strip(),
+            )
+            if error:
+                set_error(error)
+                self.page.update()
+                return
+            if not selected:
+                return
+            apply_selected_path(selected)
+
+        def refresh_branches(_e: ft.ControlEvent) -> None:
+            path = expandFolderPath(path_field.value or "")
+            if path:
+                path_field.value = path
+            remote = (remote_field.value or "").strip()
+            if not remote:
+                set_error("Enter a remote URL first.")
+                self.page.update()
+                return
+            if not from_git["value"] and not path:
+                set_error("Enter a folder path first.")
+                self.page.update()
+                return
+
+            temp = ProjectConfig(
+                id="temp-branch-list",
+                name="temp",
+                path=path,
+                remote_url=remote,
+                username=(user_field.value or "").strip(),
+                email=(email_field.value or "").strip(),
+                pat=(pat_field.value or "").strip(),
+            )
+
+            def work() -> tuple[list[str], str, str]:
+                return self.git.listRemoteBranches(temp)
+
+            def done(
+                result: Optional[tuple[list[str], str, str]],
+                error: Optional[BaseException],
+            ) -> None:
+                if error is not None:
+                    set_error(str(error))
+                    self.page.update()
+                    return
+                assert result is not None
+                branches, remote_default, err = result
+                if err:
+                    set_error(err)
+                    self.page.update()
+                    return
+
+                empty_remote = not branches
+                if empty_remote:
+                    if from_git["value"]:
+                        set_error(
+                            "Remote has no branches yet. "
+                            "Use This computer to publish the first commit."
+                        )
+                        self.page.update()
+                        return
+                    branches = self.git.suggestBranchNames(path)
+                    remote_default = branches[0] if branches else "main"
+                    set_info(
+                        "Remote has no branches yet — using "
+                        f"{remote_default} for the first push."
+                    )
+                else:
+                    clear_note()
+
+                branch_field.options = [
+                    ft.DropdownOption(key=name, text=name) for name in branches
+                ]
+                current = (branch_field.value or "").strip()
+                if current and current in branches:
+                    branch_field.value = current
+                elif remote_default and remote_default in branches:
+                    branch_field.value = remote_default
+                else:
+                    branch_field.value = branches[0]
+                note_existing_if_any()
+                self.page.update()
+
+            set_info("Loading branches from Git…")
+            self.page.update()
+            self.busy.runOrSnack("Loading branches…", work, on_done=done)
+
+        def close() -> None:
+            self.page.pop_dialog()
+
+        save_button = ft.FilledButton("Save")
+
+        def save(_e: ft.ControlEvent) -> None:
+            if self.busy.busy:
+                Dialogs.showSnack(self.page, "Please wait…")
+                return
+            path = expandFolderPath(path_field.value or "")
+            if path:
+                path_field.value = path
+            name = (name_field.value or "").strip()
+            if from_git["value"] and not name:
+                maybe_fill_name_from_url()
+                name = (name_field.value or "").strip()
+            if not path:
+                set_error("Enter a folder path or use Browse.")
+                self.page.update()
+                return
+            if not name:
+                set_error("Enter a display name.")
+                self.page.update()
+                return
+            if from_git["value"] and not editing:
+                remote_url = (remote_field.value or "").strip()
+                if not remote_url:
+                    set_error("Enter a remote URL.")
+                    self.page.update()
+                    return
+                if self.git.isRepo(path):
+                    set_error(
+                        "This folder is already a Git repo. "
+                        "Use the This computer tab instead."
+                    )
+                    self.page.update()
+                    return
+                if not self.git.isEmptyDirectory(path):
+                    set_error("Choose an empty folder to clone into.")
+                    self.page.update()
+                    return
+                branch_value = (branch_field.value or "").strip()
+            else:
+                branch_value = self.git.resolveBranchForSave(
+                    path,
+                    (branch_field.value or "").strip(),
+                )
+                ensure_branch_option(branch_value)
+                branch_field.value = branch_value
+
+            dup = self.store.findDuplicate(
+                path,
+                branch_value,
+                exclude_id=existing.id if existing else None,
+            )
+            updating_existing = False
+            if editing:
+                if dup is not None:
+                    set_error(
+                        f"This folder is already tracked for branch {branch_value}."
+                    )
+                    self.page.update()
+                    return
+                project = existing
+            elif dup is not None:
+                # Same folder+branch already on the dashboard — update that card.
+                project = dup
+                updating_existing = True
+            else:
+                project = ProjectConfig(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    path=path,
+                )
+            project.name = name
+            project.path = path
+            project.remote_url = (remote_field.value or "").strip()
+            project.username = (user_field.value or "").strip()
+            project.email = (email_field.value or "").strip()
+            project.pat = (pat_field.value or "").strip()
+            project.default_branch = branch_value
+            should_init = bool(init_checkbox.value)
+
+            def work() -> tuple[Optional[ActionOutcome], Optional[str]]:
+                """Return (switch_outcome_or_None, error_message_or_None)."""
+                if from_git["value"] and not editing:
+                    clone_out = self.git.cloneRepo(project, path, branch_value)
+                    if not clone_out.success:
+                        return None, clone_out.message or clone_out.title
+                    detected = self.git.detectBranch(path)
+                    if detected:
+                        project.default_branch = detected
+                    if updating_existing:
+                        self.store.updateProject(project)
+                    else:
+                        self.store.addProject(project)
+                    return clone_out, None
+
+                if not self.git.isRepo(path):
+                    if should_init:
+                        outcome = self.git.initRepo(path, branch_value)
+                        if not outcome.success:
+                            return None, outcome.message or outcome.title
+                    else:
+                        return None, (
+                            "Folder is not a Git repo. Check 'Initialize Git' "
+                            "or pick another folder."
+                        )
+
+                if project.remote_url:
+                    remote_outcome = self.git.setRemote(path, project.remote_url)
+                    if not remote_outcome.success:
+                        return None, remote_outcome.message or remote_outcome.title
+
+                self.git.applyLocalIdentity(path, project.username, project.email)
+                switch = self.git.checkoutSavedBranch(project)
+                if editing or updating_existing:
+                    self.store.updateProject(project)
+                else:
+                    self.store.addProject(project)
+                return switch, None
+
+            def done(
+                result: Optional[tuple[Optional[ActionOutcome], Optional[str]]],
+                error: Optional[BaseException],
+            ) -> None:
+                save_button.disabled = False
+                if error is not None:
+                    set_error(str(error))
+                    self.page.update()
+                    return
+                assert result is not None
+                switch, err_msg = result
+                if err_msg:
+                    set_error(err_msg)
+                    self.page.update()
+                    return
+                assert switch is not None
+                if not switch.success:
+                    # Still saved the picked branch; tell the user why checkout failed.
+                    set_error(switch.message or switch.title)
+                    self.page.update()
+                    self.refreshAll()
+                    return
+
+                close()
+                if updating_existing:
+                    Dialogs.showSnack(
+                        self.page,
+                        f"Updated existing project “{project.name}”",
+                    )
+                elif switch.message and (
+                    switch.title.startswith("Switched")
+                    or switch.title.startswith("Ready for first push")
+                    or switch.title.startswith("Cloned")
+                ):
+                    Dialogs.showSnack(
+                        self.page,
+                        switch.title
+                        + (f" — {switch.message}" if switch.message else ""),
+                    )
+                else:
+                    Dialogs.showSnack(self.page, "Project saved")
+                self.refreshAll()
+
+            save_button.disabled = True
+            clear_note()
+            self.page.update()
+            if not self.busy.runOrSnack("Saving project…", work, on_done=done):
+                save_button.disabled = False
+                self.page.update()
+
+        save_button.on_click = save
+
+        browse_button = ft.IconButton(
+            icon=ft.Icons.FOLDER_OPEN,
+            tooltip="Browse for a folder",
+            on_click=pick_folder,
+            width=trailing_slot_width,
+        )
+        refresh_button = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            tooltip="Load branches from Git",
+            on_click=refresh_branches,
+            width=trailing_slot_width,
+        )
+        win_h = int(getattr(self.page.window, "height", None) or 860)
+        content_h = dialogHeight(self.page, preferred=min(520, max(240, int(win_h * 0.68))))
+        form_controls: list[ft.Control] = [
+            field_row(account_field),
+            field_row(name_field),
+            field_row(path_field, browse_button),
+            field_row(remote_field),
+            field_row(user_field),
+            field_row(email_field),
+            field_row(pat_field),
+            field_row(branch_field, refresh_button),
+            init_checkbox,
+            error_text,
+        ]
+        if not editing:
+            form_controls.insert(
+                0,
+                ft.Tabs(
+                    length=2,
+                    selected_index=0,
+                    on_change=on_mode_change,
+                    content=ft.Column(
+                        [
+                            ft.TabBar(
+                                tabs=[
+                                    ft.Tab(label="This computer"),
+                                    ft.Tab(label="From Git"),
+                                ]
+                            ),
+                            ft.TabBarView(
+                                height=40,
+                                controls=[
+                                    ft.Text(
+                                        this_computer_hint,
+                                        size=12,
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                    ),
+                                    ft.Text(
+                                        from_git_hint,
+                                        size=12,
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                    ),
+                                ],
+                            ),
+                        ],
+                        tight=True,
+                    ),
+                ),
+            )
+        dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Text("Edit project" if editing else "Add project"),
+            content=ft.Container(
+                width=dialogWidth(self.page, preferred=560),
+                height=content_h,
+                content=ft.Column(
+                    form_controls,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _e: close()),
+                save_button,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.show_dialog(dialog)

@@ -1,0 +1,3 @@
+{"sessionId": "ca3fb9", "timestamp": 1787048687973, "hypothesisId": "B", "location": "busy.py:show", "message": "busy_overlay_shown", "data": {"message": "Refreshing\u2026"}, "pid": 50492}
+{"sessionId": "ca3fb9", "timestamp": 1787049047608, "hypothesisId": "C", "location": "restart.py:restartApp", "message": "restart_spawn", "data": {"pid": 50492, "nt": true}, "pid": 50492}
+{"sessionId": "ca3fb9", "timestamp": 1787049048612, "hypothesisId": "C", "location": "restart.py:_scheduleHardExit", "message": "about_to_os_exit", "data": {"delay": 1.0, "pid": 50492}, "pid": 50492}
