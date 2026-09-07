@@ -470,3 +470,30 @@ class ProjectStatus:
     # --------------------------------------------------------
     def summaryLabel(self) -> str:
         return " · ".join(self.plainStatusLines())
+
+    # --------------------------------------------------------
+    # Method: needsSync
+    # Purpose: True when this is a Git repo that is not in sync.
+    #          Missing folders and non-repos do not count.
+    # --------------------------------------------------------
+    def needsSync(self) -> bool:
+        if not self.path_exists or not self.is_repo:
+            return False
+        if self.suggested_action == SuggestedAction.SYNCED:
+            return False
+        if self.suggested_action in (
+            SuggestedAction.COMMIT,
+            SuggestedAction.PUSH,
+            SuggestedAction.PULL,
+            SuggestedAction.MERGE,
+            SuggestedAction.RESOLVE,
+        ):
+            return True
+        return bool(
+            self.dirty
+            or self.ahead
+            or self.behind
+            or self.upstream_missing
+            or self.remote_empty
+            or self.diverges_from_default
+        )

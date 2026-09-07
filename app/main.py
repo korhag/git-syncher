@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from app.core.close_check import closeWarningMessage, unsyncedProjectNames
 from app.core.git_service import GitService
 from app.core.instance_lock import (
     acquireAppLock,
@@ -9,8 +10,10 @@ from app.core.instance_lock import (
     showAlreadyRunningAndExit,
 )
 from app.core.store import VaultStore
+from app.models.project import ProjectStatus
 from app.ui.busy import BusyOverlay
 from app.ui.dashboard import DashboardView
+from app.ui.dialogs import Dialogs
 from app.ui.layout import fitWindowToScreen
 from app.ui.project_detail import ProjectDetailView
 from app.ui.unlock import UnlockView
@@ -33,8 +36,11 @@ class GitSyncherApp:
         self.dashboard: DashboardView | None = None
         self.busy = BusyOverlay(page)
         self.root_content = ft.Container(expand=True)
+        self._close_check_in_progress = False
+        self._close_prompt_open = False
         self._configurePage()
         page.on_close = self._onWindowClose
+        page.window.on_event = self._onWindowEvent
         page.add(
             ft.Stack(
                 [
@@ -55,6 +61,7 @@ class GitSyncherApp:
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 0
         self.page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL)
+        self.page.window.prevent_close = True
         fitWindowToScreen(self.page)
 
     # --------------------------------------------------------
@@ -63,6 +70,107 @@ class GitSyncherApp:
     # --------------------------------------------------------
     def _onWindowClose(self, _e: ft.ControlEvent) -> None:
         releaseAppLock()
+
+    # --------------------------------------------------------
+    # Method: _onWindowEvent
+    # Purpose: Intercept the close button, scan once more, and
+    #          warn when repositories are still unsynced.
+    # --------------------------------------------------------
+    def _onWindowEvent(self, e: ft.WindowEvent) -> None:
+        event_type = getattr(e, "type", None)
+        type_value = getattr(event_type, "value", event_type)
+        if type_value not in (ft.WindowEventType.CLOSE, "close"):
+            return
+        if self._close_prompt_open or self._close_check_in_progress:
+            return
+        self._beginCloseCheck()
+
+    # --------------------------------------------------------
+    # Method: _beginCloseCheck
+    # Purpose: Wait for Git work to finish, refresh, then warn
+    #          or close.
+    # --------------------------------------------------------
+    def _beginCloseCheck(self) -> None:
+        self._close_check_in_progress = True
+        self.busy.whenIdle(self._scanThenConfirmClose)
+
+    # --------------------------------------------------------
+    # Method: _scanThenConfirmClose
+    # Purpose: One last refresh, then close or show a warning.
+    # --------------------------------------------------------
+    def _scanThenConfirmClose(self) -> None:
+        dashboard = self.dashboard
+        if dashboard is None or not self.store.projects:
+            self._destroyWindow()
+            return
+
+        def after_scan(
+            result: dict[str, ProjectStatus] | None,
+            _error: BaseException | None,
+        ) -> None:
+            statuses = result if result is not None else dashboard.statuses
+            names = unsyncedProjectNames(self.store.projects, statuses)
+            if not names:
+                self._destroyWindow()
+                return
+            self._showUnsyncedCloseWarning(names)
+
+        if dashboard.git.isGitAvailable():
+            started = dashboard.refreshAll(on_finished=after_scan)
+            if started:
+                return
+            self.busy.whenIdle(self._scanThenConfirmClose)
+            return
+        after_scan(dashboard.statuses, None)
+
+    # --------------------------------------------------------
+    # Method: _showUnsyncedCloseWarning
+    # Purpose: Warning notification: close anyway or stay to sync.
+    # --------------------------------------------------------
+    def _showUnsyncedCloseWarning(self, names: list[str]) -> None:
+        self._close_check_in_progress = False
+        self._close_prompt_open = True
+
+        def stay() -> None:
+            self._close_prompt_open = False
+            Dialogs.showSnack(
+                self.page,
+                "Close cancelled — you can keep syncing.",
+            )
+
+        def close_anyway() -> None:
+            self._close_prompt_open = False
+            self._destroyWindow()
+
+        Dialogs.showWarningChoice(
+            self.page,
+            title="Unsynced repositories",
+            message=closeWarningMessage(names),
+            stay_label="Stay and sync",
+            continue_label="Close anyway",
+            on_stay=stay,
+            on_continue=close_anyway,
+        )
+        self.page.update()
+
+    # --------------------------------------------------------
+    # Method: _destroyWindow
+    # Purpose: Allow native close and destroy the window.
+    # --------------------------------------------------------
+    def _destroyWindow(self) -> None:
+        self._close_check_in_progress = False
+        self._close_prompt_open = False
+        self.page.window.prevent_close = False
+        try:
+            self.page.update()
+        except Exception:
+            pass
+        releaseAppLock()
+
+        async def destroy() -> None:
+            await self.page.window.destroy()
+
+        self.page.run_task(destroy)
 
     # --------------------------------------------------------
     # Method: clear

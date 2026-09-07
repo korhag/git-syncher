@@ -217,6 +217,38 @@ class TestPlainStatusLines:
 
 
 # ------------------------------------------------------------
+# Tests: ProjectStatus.needsSync
+# ------------------------------------------------------------
+class TestNeedsSync:
+    # --------------------------------------------------------
+    # Method: testSyncedIsNotUnsynced
+    # --------------------------------------------------------
+    def testSyncedIsNotUnsynced(self) -> None:
+        assert _status(suggested_action=SuggestedAction.SYNCED).needsSync() is False
+
+    # --------------------------------------------------------
+    # Method: testPushNeedsSync
+    # --------------------------------------------------------
+    def testPushNeedsSync(self) -> None:
+        assert _status(suggested_action=SuggestedAction.PUSH, ahead=1).needsSync() is True
+
+    # --------------------------------------------------------
+    # Method: testDirtyNeedsSync
+    # --------------------------------------------------------
+    def testDirtyNeedsSync(self) -> None:
+        assert _status(dirty=True, suggested_action=SuggestedAction.COMMIT).needsSync() is True
+
+    # --------------------------------------------------------
+    # Method: testMissingPathDoesNotNeedSync
+    # --------------------------------------------------------
+    def testMissingPathDoesNotNeedSync(self) -> None:
+        missing = _status(path_exists=False, is_repo=False, suggested_action=SuggestedAction.MISSING_PATH)
+        assert missing.needsSync() is False
+        not_repo = _status(is_repo=False, suggested_action=SuggestedAction.NOT_A_REPO)
+        assert not_repo.needsSync() is False
+
+
+# ------------------------------------------------------------
 # Tests: ProjectStatus.versionSummaryLines
 # ------------------------------------------------------------
 class TestVersionSummaryLines:

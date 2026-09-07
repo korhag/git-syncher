@@ -180,6 +180,51 @@ class Dialogs:
         page.show_dialog(dialog)
 
     # --------------------------------------------------------
+    # Method: showWarningChoice
+    # Purpose: Warning dialog with stay vs continue actions.
+    # --------------------------------------------------------
+    @staticmethod
+    def showWarningChoice(
+        page: ft.Page,
+        title: str,
+        message: str,
+        stay_label: str,
+        continue_label: str,
+        on_stay: Callable[[], None],
+        on_continue: Callable[[], None],
+    ) -> None:
+        def handle_stay(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            on_stay()
+
+        def handle_continue(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            on_continue()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Row(
+                [
+                    ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.AMBER_400),
+                    ft.Text(title),
+                ],
+                spacing=8,
+                tight=True,
+            ),
+            content=ft.Text(
+                message,
+                width=dialogWidth(page, preferred=420),
+            ),
+            actions=[
+                ft.TextButton(continue_label, on_click=handle_continue),
+                ft.FilledButton(stay_label, on_click=handle_stay),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialog)
+
+    # --------------------------------------------------------
     # Method: showCommit
     # Purpose: Commit message dialog with optional prefill.
     # --------------------------------------------------------

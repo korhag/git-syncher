@@ -22,6 +22,7 @@ class BusyOverlay:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self._busy = False
+        self._idle_callbacks: list[Callable[[], None]] = []
         self._message = ft.Text(
             "Working…",
             size=14,
@@ -88,6 +89,7 @@ class BusyOverlay:
     ) -> bool:
         if self._busy:
             return False
+        self._busy = True
 
         async def _task() -> None:
             self.show(message)
@@ -101,9 +103,30 @@ class BusyOverlay:
                 self.hide()
             if on_done is not None:
                 on_done(result, error)
+            self._flushIdle()
 
         self.page.run_task(_task)
         return True
+
+    # --------------------------------------------------------
+    # Method: whenIdle
+    # Purpose: Run fn now, or after the current background job.
+    # --------------------------------------------------------
+    def whenIdle(self, fn: Callable[[], None]) -> None:
+        if not self._busy:
+            fn()
+            return
+        self._idle_callbacks.append(fn)
+
+    # --------------------------------------------------------
+    # Method: _flushIdle
+    # Purpose: Run waiters queued while a job was in progress.
+    # --------------------------------------------------------
+    def _flushIdle(self) -> None:
+        callbacks = self._idle_callbacks
+        self._idle_callbacks = []
+        for callback in callbacks:
+            callback()
 
     # --------------------------------------------------------
     # Method: runOrSnack

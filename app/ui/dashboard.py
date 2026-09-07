@@ -168,11 +168,21 @@ class DashboardView:
     # --------------------------------------------------------
     # Method: refreshAll
     # Purpose: Re-query Git status for every saved project.
+    # Input: on_finished - optional callback after the scan (or
+    #        immediately when Git is missing).
+    # Output: bool - True when a background scan was started.
     # --------------------------------------------------------
-    def refreshAll(self) -> None:
+    def refreshAll(
+        self,
+        on_finished: Optional[
+            Callable[[Optional[dict[str, ProjectStatus]], Optional[BaseException]], None]
+        ] = None,
+    ) -> bool:
         if not self.git.isGitAvailable():
             Dialogs.showSnack(self.page, "Git is not installed or not on PATH.", error=True)
-            return
+            if on_finished is not None:
+                on_finished(self.statuses, RuntimeError("git unavailable"))
+            return False
 
         def work() -> dict[str, ProjectStatus]:
             return self.git.refreshAll(self.store.projects, fetch=True)
@@ -187,6 +197,8 @@ class DashboardView:
                 Dialogs.showSnack(self.page, str(error), error=True)
                 self._rebuildCards()
                 self.page.update()
+                if on_finished is not None:
+                    on_finished(self.statuses, error)
                 return
             self.statuses = result or {}
             # Persist vault (e.g. remote URL detections); do not rewrite default_branch.
@@ -198,6 +210,8 @@ class DashboardView:
             self.status_text.value = f"Updated {count} project{'s' if count != 1 else ''}"
             self._rebuildCards()
             self.page.update()
+            if on_finished is not None:
+                on_finished(self.statuses, None)
 
         self.refresh_button.disabled = True
         self.status_text.value = "Refreshing…"
@@ -205,6 +219,8 @@ class DashboardView:
         if not self.busy.runOrSnack("Refreshing…", work, on_done=done):
             self.refresh_button.disabled = False
             self.page.update()
+            return False
+        return True
 
     # --------------------------------------------------------
     # Method: _rebuildCards
