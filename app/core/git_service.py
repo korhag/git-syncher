@@ -17,6 +17,8 @@ from app.models.project import (
     ProjectConfig,
     ProjectStatus,
     SuggestedAction,
+    VsGitFile,
+    VsGitPresence,
 )
 
 # Hide git.cmd / console windows on Windows (refresh otherwise flashes cmd).
@@ -538,6 +540,13 @@ class GitService:
             root,
             remote_version_branch,
         )
+        compared = status.comparedGitBranch()
+        if compared and not status.remote_empty:
+            status.vs_git_files = self.listVsGitFiles(
+                root,
+                compared,
+                status.changes,
+            )
         status.suggested_action = self._suggestAction(status)
         return status
 
@@ -616,6 +625,99 @@ class GitService:
             staged = xy[0] not in (" ", "?")
             changes.append(FileChange(path=file_path, kind=kind, staged=staged))
         return changes
+
+    # --------------------------------------------------------
+    # Method: listVsGitFiles
+    # Purpose: Classify paths vs origin/<branch>: only local, only Git,
+    #          or both with different content. Untracked files are local-only.
+    # --------------------------------------------------------
+    def listVsGitFiles(
+        self,
+        path: str | Path,
+        remote_branch: str,
+        changes: Optional[list[FileChange]] = None,
+    ) -> list[VsGitFile]:
+        root = Path(path)
+        if not remote_branch:
+            return []
+        remote_ref = f"origin/{remote_branch}"
+        check = self._run(["rev-parse", "--verify", remote_ref], cwd=root)
+        if not check.ok:
+            return []
+        result = self._run(
+            ["diff", "--name-status", "--no-renames", remote_ref],
+            cwd=root,
+        )
+        # git diff returns 1 when files differ; 0/1 are both usable output.
+        if result.returncode not in (0, 1):
+            return []
+
+        working = {item.path: item.kind for item in (changes or [])}
+        seen: set[str] = set()
+        files: list[VsGitFile] = []
+        for letter, file_path in self.parseNameStatusLines(result.stdout):
+            presence = self.presenceFromNameStatus(letter)
+            if not presence or not file_path or file_path in seen:
+                continue
+            seen.add(file_path)
+            kind = working.get(file_path, FileChangeKind.UNKNOWN)
+            files.append(VsGitFile(path=file_path, presence=presence, kind=kind))
+
+        for change in changes or []:
+            if change.kind != FileChangeKind.UNTRACKED:
+                continue
+            if change.path in seen:
+                continue
+            seen.add(change.path)
+            files.append(
+                VsGitFile(
+                    path=change.path,
+                    presence=VsGitPresence.ONLY_LOCAL,
+                    kind=FileChangeKind.UNTRACKED,
+                )
+            )
+        return files
+
+    # --------------------------------------------------------
+    # Method: parseNameStatusLines
+    # Purpose: Parse `git diff --name-status` output into (letter, path).
+    # --------------------------------------------------------
+    @staticmethod
+    def parseNameStatusLines(text: str) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if "\t" in line:
+                status, file_path = line.split("\t", 1)
+            else:
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                status, file_path = parts
+            letter = status[0] if status else ""
+            file_path = file_path.strip()
+            if letter and file_path:
+                rows.append((letter, file_path))
+        return rows
+
+    # --------------------------------------------------------
+    # Method: presenceFromNameStatus
+    # Purpose: Map a name-status letter to local / Git / both.
+    # --------------------------------------------------------
+    @staticmethod
+    def presenceFromNameStatus(letter: str) -> Optional[VsGitPresence]:
+        if not letter:
+            return None
+        code = letter.upper()
+        if code == "A":
+            return VsGitPresence.ONLY_LOCAL
+        if code == "D":
+            return VsGitPresence.ONLY_GIT
+        if code in ("M", "T", "U", "C", "X", "B"):
+            return VsGitPresence.BOTH_DIFFER
+        return VsGitPresence.BOTH_DIFFER
 
     # --------------------------------------------------------
     # Method: getDiff

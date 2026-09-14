@@ -5,6 +5,13 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-09-14
+
+### Added
+
+- **Copy all** on the project file list (and **Copy** per group) copies each path, one per line, so you can paste into a text file or `.gitignore`
+- When this computer and Git differ, files are grouped as **Only on this computer**, **Only on Git**, or **On both, different** — including after Merge/Resolve when the working tree is clean
+
 ## [1.14.0] - 2026-09-07
 
 ### Added

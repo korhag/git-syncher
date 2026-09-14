@@ -36,6 +36,36 @@ class FileChangeKind(str, Enum):
 
 
 # ------------------------------------------------------------
+# Enum: VsGitPresence
+# Purpose: Whether a path exists only locally, only on Git, or
+#          on both sides with different content.
+# ------------------------------------------------------------
+class VsGitPresence(str, Enum):
+    ONLY_LOCAL = "only_local"
+    ONLY_GIT = "only_git"
+    BOTH_DIFFER = "both_differ"
+
+
+# ------------------------------------------------------------
+# Class: VsGitFile
+# Purpose: One path compared between this computer and Git.
+# ------------------------------------------------------------
+@dataclass
+class VsGitFile:
+    path: str
+    presence: VsGitPresence
+    kind: FileChangeKind = FileChangeKind.UNKNOWN
+
+
+# ------------------------------------------------------------
+# Function: formatPathList
+# Purpose: Join repo-relative paths for the clipboard (one per line).
+# ------------------------------------------------------------
+def formatPathList(paths: list[str]) -> str:
+    return "\n".join(path for path in paths if path)
+
+
+# ------------------------------------------------------------
 # Class: FileChange
 # Purpose: Represents one changed file in a Git working tree.
 # ------------------------------------------------------------
@@ -129,6 +159,7 @@ class ProjectStatus:
     behind: int = 0
     dirty: bool = False
     changes: list[FileChange] = field(default_factory=list)
+    vs_git_files: list[VsGitFile] = field(default_factory=list)
     last_tag: str = ""
     changelog_version: Optional[str] = None
     git_changelog_version: Optional[str] = None
@@ -193,6 +224,25 @@ class ProjectStatus:
         if self.diverges_from_default and self.remote_default_branch:
             return self.remote_default_branch
         return self.branch or ""
+
+    # --------------------------------------------------------
+    # Method: vsGitFilesFor
+    # Purpose: Subset of vs_git_files with the given presence.
+    # --------------------------------------------------------
+    def vsGitFilesFor(self, presence: VsGitPresence) -> list[VsGitFile]:
+        return [item for item in self.vs_git_files if item.presence == presence]
+
+    # --------------------------------------------------------
+    # Method: pathsToCopy
+    # Purpose: Repo-relative paths for Copy all or one vs-Git group.
+    #          Falls back to working-tree changes when Git was not compared.
+    # --------------------------------------------------------
+    def pathsToCopy(self, presence: Optional[VsGitPresence] = None) -> list[str]:
+        if presence is not None:
+            return [item.path for item in self.vs_git_files if item.presence == presence]
+        if self.vs_git_files:
+            return [item.path for item in self.vs_git_files]
+        return [change.path for change in self.changes]
 
     # --------------------------------------------------------
     # Method: dashboardCompareLines

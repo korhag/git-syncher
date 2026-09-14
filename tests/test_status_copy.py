@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from app.models.project import FileChange, FileChangeKind, ProjectStatus, SuggestedAction
+from app.models.project import (
+    FileChange,
+    FileChangeKind,
+    ProjectStatus,
+    SuggestedAction,
+    VsGitFile,
+    VsGitPresence,
+    formatPathList,
+)
 
 
 # ------------------------------------------------------------
@@ -309,3 +317,65 @@ class TestVersionSummaryLines:
         lines = status.versionSummaryLines()
         assert "This computer: v0.27.1" in lines[0]
         assert "none" in lines[1].lower()
+
+
+# ------------------------------------------------------------
+# Tests: formatPathList and ProjectStatus.pathsToCopy
+# ------------------------------------------------------------
+class TestFormatPathList:
+    # --------------------------------------------------------
+    # Method: testJoinsRepoRelativePaths
+    # --------------------------------------------------------
+    def testJoinsRepoRelativePaths(self) -> None:
+        text = formatPathList(
+            ["CHANGELOG.md", "assets/i18n/strings.csv", "Cargo.toml"]
+        )
+        assert text == "CHANGELOG.md\nassets/i18n/strings.csv\nCargo.toml"
+
+    # --------------------------------------------------------
+    # Method: testSkipsEmptyAndReturnsEmpty
+    # --------------------------------------------------------
+    def testSkipsEmptyAndReturnsEmpty(self) -> None:
+        assert formatPathList([]) == ""
+        assert formatPathList(["", "a.py", ""]) == "a.py"
+
+
+# ------------------------------------------------------------
+# Tests: ProjectStatus.pathsToCopy
+# ------------------------------------------------------------
+class TestPathsToCopy:
+    # --------------------------------------------------------
+    # Method: testFallsBackToWorkingTreeChanges
+    # --------------------------------------------------------
+    def testFallsBackToWorkingTreeChanges(self) -> None:
+        status = _status(
+            changes=[
+                FileChange(path="a.py", kind=FileChangeKind.MODIFIED),
+                FileChange(path="tmp/cache.bin", kind=FileChangeKind.UNTRACKED),
+            ]
+        )
+        assert status.pathsToCopy() == ["a.py", "tmp/cache.bin"]
+
+    # --------------------------------------------------------
+    # Method: testPrefersVsGitFilesAndFiltersPresence
+    # --------------------------------------------------------
+    def testPrefersVsGitFilesAndFiltersPresence(self) -> None:
+        status = _status(
+            changes=[FileChange(path="ignored.py", kind=FileChangeKind.MODIFIED)],
+            vs_git_files=[
+                VsGitFile("local-only.txt", VsGitPresence.ONLY_LOCAL),
+                VsGitFile("remote-only.txt", VsGitPresence.ONLY_GIT),
+                VsGitFile("shared.txt", VsGitPresence.BOTH_DIFFER),
+            ],
+        )
+        assert status.pathsToCopy() == [
+            "local-only.txt",
+            "remote-only.txt",
+            "shared.txt",
+        ]
+        assert status.pathsToCopy(VsGitPresence.ONLY_LOCAL) == ["local-only.txt"]
+        assert status.pathsToCopy(VsGitPresence.ONLY_GIT) == ["remote-only.txt"]
+        assert status.pathsToCopy(VsGitPresence.BOTH_DIFFER) == ["shared.txt"]
+        assert [item.path for item in status.vsGitFilesFor(VsGitPresence.ONLY_GIT)] == [
+            "remote-only.txt"
+        ]

@@ -9,7 +9,14 @@ from app.core.changelog import ChangelogParser
 from app.core.git_service import GitService
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.store import VaultStore
-from app.models.project import FileChangeKind, ProjectConfig, ProjectStatus, SuggestedAction
+from app.models.project import (
+    FileChangeKind,
+    ProjectConfig,
+    ProjectStatus,
+    SuggestedAction,
+    VsGitPresence,
+    formatPathList,
+)
 from app.ui.busy import BusyOverlay
 from app.ui.dashboard import DashboardView, _ACTION_META
 from app.ui.dialogs import Dialogs
@@ -251,28 +258,140 @@ class ProjectDetailView:
             )
         )
 
+        copy_all_paths = status.pathsToCopy()
+        heading_row: list[ft.Control] = [
+            ft.Text("Changed files", size=16, weight=ft.FontWeight.W_600),
+        ]
+        if copy_all_paths:
+            heading_row.append(
+                ft.TextButton(
+                    "Copy all",
+                    icon=ft.Icons.CONTENT_COPY,
+                    on_click=lambda _e, paths=copy_all_paths: self._copyPaths(paths),
+                )
+            )
         self.body.controls.append(
-            ft.Text("Changed files", size=16, weight=ft.FontWeight.W_600)
+            ft.Row(
+                heading_row,
+                wrap=True,
+                spacing=8,
+                run_spacing=0,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
         )
 
-        if not status.changes:
+        if status.vs_git_files:
+            compared = status.comparedGitBranch()
+            count = len(status.vs_git_files)
+            noun = "file" if count == 1 else "files"
+            compared_note = (
+                f"{count} {noun} · compared with origin/{compared}"
+                if compared
+                else f"{count} {noun}"
+            )
+            self.body.controls.append(
+                ft.Text(
+                    compared_note,
+                    size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                )
+            )
+            self._appendVsGitGroups(status)
+        elif not status.changes:
             self.body.controls.append(
                 ft.Text("Working tree clean.", color=ft.Colors.ON_SURFACE_VARIANT)
             )
             return
+        else:
+            for change in status.changes:
+                self.body.controls.append(self._fileRow(change.path, change.kind))
 
-        for change in status.changes:
-            self.body.controls.append(self._fileRow(change.path, change.kind))
-
-        self.body.controls.append(ft.Container(height=8))
-        self.body.controls.append(
-            ft.OutlinedButton(
-                "Discard all local changes",
-                icon=ft.Icons.DELETE_SWEEP,
-                style=ft.ButtonStyle(color=ft.Colors.RED_400),
-                on_click=lambda _e: self._discardAll(),
+        if status.changes:
+            self.body.controls.append(ft.Container(height=8))
+            self.body.controls.append(
+                ft.OutlinedButton(
+                    "Discard all local changes",
+                    icon=ft.Icons.DELETE_SWEEP,
+                    style=ft.ButtonStyle(color=ft.Colors.RED_400),
+                    on_click=lambda _e: self._discardAll(),
+                )
             )
+
+    # --------------------------------------------------------
+    # Method: _appendVsGitGroups
+    # Purpose: Render only-local / only-Git / both-differ groups.
+    # --------------------------------------------------------
+    def _appendVsGitGroups(self, status: ProjectStatus) -> None:
+        groups = (
+            (
+                VsGitPresence.ONLY_LOCAL,
+                "Only on this computer",
+                "not on Git",
+            ),
+            (
+                VsGitPresence.ONLY_GIT,
+                "Only on Git",
+                "not on this computer",
+            ),
+            (
+                VsGitPresence.BOTH_DIFFER,
+                "On both, different",
+                "same path, different content",
+            ),
         )
+        for presence, title, hint in groups:
+            items = status.vsGitFilesFor(presence)
+            if not items:
+                continue
+            group_paths = [item.path for item in items]
+            count = len(items)
+            self.body.controls.append(
+                ft.Row(
+                    [
+                        ft.Text(
+                            f"{title} ({count})",
+                            size=14,
+                            weight=ft.FontWeight.W_600,
+                        ),
+                        ft.TextButton(
+                            "Copy",
+                            icon=ft.Icons.CONTENT_COPY,
+                            on_click=lambda _e, paths=group_paths: self._copyPaths(
+                                paths
+                            ),
+                        ),
+                    ],
+                    wrap=True,
+                    spacing=4,
+                    run_spacing=0,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+            )
+            self.body.controls.append(
+                ft.Text(hint, size=11, color=ft.Colors.ON_SURFACE_VARIANT)
+            )
+            for item in items:
+                self.body.controls.append(
+                    self._fileRow(
+                        item.path,
+                        item.kind,
+                        presence=presence,
+                    )
+                )
+
+    # --------------------------------------------------------
+    # Method: _copyPaths
+    # Purpose: Copy repo-relative paths to the clipboard (one per line).
+    # --------------------------------------------------------
+    def _copyPaths(self, paths: list[str]) -> None:
+        text = formatPathList(paths)
+        if not text:
+            Dialogs.showSnack(self.page, "No paths to copy.")
+            return
+        self.page.set_clipboard(text)
+        count = len(paths)
+        noun = "path" if count == 1 else "paths"
+        Dialogs.showSnack(self.page, f"Copied {count} {noun}")
 
     # --------------------------------------------------------
     # Method: _suggestionHint
@@ -338,48 +457,83 @@ class ProjectDetailView:
     # Method: _fileRow
     # Purpose: Row with compare / discard / conflict actions.
     # --------------------------------------------------------
-    def _fileRow(self, file_path: str, kind: FileChangeKind) -> ft.Control:
+    def _fileRow(
+        self,
+        file_path: str,
+        kind: FileChangeKind,
+        presence: Optional[VsGitPresence] = None,
+    ) -> ft.Control:
         is_conflict = kind == FileChangeKind.CONFLICT
-        buttons: list[ft.Control] = [
-            ft.TextButton(
-                "Compare",
-                icon=ft.Icons.COMPARE,
-                on_click=lambda _e, p=file_path: self._compareFile(p),
-            ),
-            ft.TextButton(
-                "Discard",
-                icon=ft.Icons.UNDO,
-                style=ft.ButtonStyle(color=ft.Colors.RED_400),
-                on_click=lambda _e, p=file_path: self._discardFile(p),
-            ),
+        show_actions = kind != FileChangeKind.UNKNOWN
+        subtitle = self._fileSubtitle(kind, presence)
+        buttons: list[ft.Control] = []
+        if show_actions:
+            buttons = [
+                ft.TextButton(
+                    "Compare",
+                    icon=ft.Icons.COMPARE,
+                    on_click=lambda _e, p=file_path: self._compareFile(p),
+                ),
+                ft.TextButton(
+                    "Discard",
+                    icon=ft.Icons.UNDO,
+                    style=ft.ButtonStyle(color=ft.Colors.RED_400),
+                    on_click=lambda _e, p=file_path: self._discardFile(p),
+                ),
+            ]
+            if is_conflict:
+                buttons.extend(
+                    [
+                        ft.TextButton(
+                            "Keep local",
+                            on_click=lambda _e, p=file_path: self._keepLocal(p),
+                        ),
+                        ft.TextButton(
+                            "Take remote",
+                            on_click=lambda _e, p=file_path: self._takeRemote(p),
+                        ),
+                    ]
+                )
+
+        column_controls: list[ft.Control] = [
+            ft.Text(file_path, size=13),
+            ft.Text(subtitle, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
         ]
-        if is_conflict:
-            buttons.extend(
-                [
-                    ft.TextButton(
-                        "Keep local",
-                        on_click=lambda _e, p=file_path: self._keepLocal(p),
-                    ),
-                    ft.TextButton(
-                        "Take remote",
-                        on_click=lambda _e, p=file_path: self._takeRemote(p),
-                    ),
-                ]
+        if buttons:
+            column_controls.append(
+                ft.Row(buttons, wrap=True, spacing=0, run_spacing=0)
             )
 
         return ft.Container(
             padding=ft.Padding.symmetric(vertical=4, horizontal=8),
             border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
             content=ft.Column(
-                [
-                    ft.Text(file_path, size=13),
-                    ft.Text(kind.value, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Row(buttons, wrap=True, spacing=0, run_spacing=0),
-                ],
+                column_controls,
                 spacing=2,
                 tight=True,
             ),
         )
+
+    # --------------------------------------------------------
+    # Method: _fileSubtitle
+    # Purpose: Presence + working-tree kind line under a file path.
+    # --------------------------------------------------------
+    @staticmethod
+    def _fileSubtitle(
+        kind: FileChangeKind,
+        presence: Optional[VsGitPresence],
+    ) -> str:
+        presence_label = {
+            VsGitPresence.ONLY_LOCAL: "only on this computer — not on Git",
+            VsGitPresence.ONLY_GIT: "only on Git — not on this computer",
+            VsGitPresence.BOTH_DIFFER: "on both — different",
+        }.get(presence) if presence else None
+        bits: list[str] = []
+        if presence_label:
+            bits.append(presence_label)
+        if kind != FileChangeKind.UNKNOWN:
+            bits.append(kind.value)
+        return " · ".join(bits) if bits else kind.value
 
     # --------------------------------------------------------
     # Method: _runSuggested
