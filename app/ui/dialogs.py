@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import flet as ft
 
@@ -351,6 +351,112 @@ class Dialogs:
                     ],
                     scroll=ft.ScrollMode.AUTO,
                     expand=True,
+                ),
+                width=dialogWidth(page, preferred=640),
+                height=dialogHeight(page, preferred=420),
+                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                padding=12,
+                border_radius=8,
+            ),
+            actions=[ft.TextButton("Close", on_click=lambda _e: page.pop_dialog())],
+        )
+        page.show_dialog(dialog)
+
+    # --------------------------------------------------------
+    # Method: copyText
+    # Purpose: Copy text with Flet 0.80+ Clipboard (async service).
+    #          Falls back to a selectable dialog if clipboard fails.
+    # --------------------------------------------------------
+    @staticmethod
+    def copyText(page: ft.Page, text: str, success_message: str) -> None:
+        if not text:
+            Dialogs.showSnack(page, "No paths to copy.")
+            return
+
+        setter = getattr(page, "set_clipboard", None)
+        if callable(setter):
+            try:
+                setter(text)
+                Dialogs.showSnack(page, success_message)
+                return
+            except Exception:
+                Dialogs._showCopyFallback(page, text)
+                return
+
+        clip = Dialogs._clipboardService(page)
+        run_task = getattr(page, "run_task", None)
+        if clip is not None and callable(run_task):
+            async def _set() -> None:
+                try:
+                    await clip.set(text)
+                    Dialogs.showSnack(page, success_message)
+                except Exception:
+                    Dialogs._showCopyFallback(page, text)
+
+            try:
+                run_task(_set)
+                return
+            except Exception:
+                pass
+        Dialogs._showCopyFallback(page, text)
+
+    # --------------------------------------------------------
+    # Method: _clipboardService
+    # Purpose: One Clipboard service attached to the page.
+    # --------------------------------------------------------
+    @staticmethod
+    def _clipboardService(page: ft.Page) -> Optional[Any]:
+        existing = getattr(page, "_syncher_clipboard", None)
+        if existing is not None:
+            return existing
+        clipboard_cls = getattr(ft, "Clipboard", None)
+        if clipboard_cls is None:
+            return None
+        try:
+            clip = clipboard_cls()
+        except Exception:
+            return None
+        services = getattr(page, "services", None)
+        if services is not None:
+            try:
+                services.append(clip)
+                page.update()
+            except Exception:
+                pass
+        try:
+            setattr(page, "_syncher_clipboard", clip)
+        except Exception:
+            pass
+        return clip
+
+    # --------------------------------------------------------
+    # Method: _showCopyFallback
+    # Purpose: Selectable path list when the clipboard API fails.
+    # --------------------------------------------------------
+    @staticmethod
+    def _showCopyFallback(page: ft.Page, text: str) -> None:
+        dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Text("Copy these paths"),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Clipboard is not available here. "
+                            "Select the text below and copy it.",
+                            size=13,
+                        ),
+                        ft.Text(
+                            text,
+                            selectable=True,
+                            font_family="Consolas",
+                            size=12,
+                        ),
+                    ],
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                    spacing=8,
                 ),
                 width=dialogWidth(page, preferred=640),
                 height=dialogHeight(page, preferred=420),

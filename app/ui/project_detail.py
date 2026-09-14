@@ -388,10 +388,9 @@ class ProjectDetailView:
         if not text:
             Dialogs.showSnack(self.page, "No paths to copy.")
             return
-        self.page.set_clipboard(text)
         count = len(paths)
         noun = "path" if count == 1 else "paths"
-        Dialogs.showSnack(self.page, f"Copied {count} {noun}")
+        Dialogs.copyText(self.page, text, f"Copied {count} {noun}")
 
     # --------------------------------------------------------
     # Method: _suggestionHint

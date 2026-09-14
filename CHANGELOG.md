@@ -5,6 +5,12 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.1] - 2026-09-14
+
+### Fixed
+
+- Copy all / Copy no longer crash with `'Page' object has no attribute 'set_clipboard'` on Flet 0.80+ (Raspberry Pi). Paths still appear in a selectable dialog if the clipboard is unavailable
+
 ## [1.15.0] - 2026-09-14
 
 ### Added
