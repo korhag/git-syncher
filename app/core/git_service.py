@@ -886,6 +886,8 @@ class GitService:
     # --------------------------------------------------------
     # Method: pull
     # Purpose: Pull from origin for the branch you are on.
+    #          Always pass --ff-only (or --rebase) so Git 2.27+ does not
+    #          refuse until pull.rebase is configured.
     # --------------------------------------------------------
     def pull(
         self,
@@ -899,6 +901,8 @@ class GitService:
         args = ["pull"]
         if rebase:
             args.append("--rebase")
+        else:
+            args.append("--ff-only")
         args.extend(["origin", target])
         result = self._runWithAuth(args, cwd=root, project=project, timeout=120)
         if result.ok:
@@ -1240,13 +1244,11 @@ class GitService:
 
     # --------------------------------------------------------
     # Method: discardThenPull
-    # Purpose: Discard all local changes then pull.
+    # Purpose: After confirm, make this folder identical to Git
+    #          (fetch + hard reset to origin + clean). Git online unchanged.
     # --------------------------------------------------------
     def discardThenPull(self, project: ProjectConfig) -> ActionOutcome:
-        discard = self.discardAll(project.path)
-        if not discard.success:
-            return discard
-        return self.pull(project)
+        return self.resetToRemote(project)
 
     # --------------------------------------------------------
     # Method: resetToRemote

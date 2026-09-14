@@ -5,6 +5,12 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.2] - 2026-09-14
+
+### Fixed
+
+- **Discard local then pull** (after the confirmation checkbox) now resets this folder to Git: local commits and unsaved files are thrown away, then the folder matches GitHub. Git online is not changed. A plain Pull uses `--ff-only` so Git no longer blocks with the pull.rebase hint
+
 ## [1.15.1] - 2026-09-14
 
 ### Fixed

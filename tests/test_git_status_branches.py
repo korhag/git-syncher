@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from app.core.git_service import GitService
+from app.core.actions import ActionId
 from app.models.project import ProjectConfig, SuggestedAction
 
 
@@ -375,3 +376,83 @@ class TestHonorSavedBranchAndForcePush:
             assert show.returncode == 0
             assert "from master" in show.stdout
             assert service.detectBranch(clone) == "master"
+
+
+# ------------------------------------------------------------
+# Tests: discardThenPull resets to origin
+# ------------------------------------------------------------
+class TestDiscardThenPull:
+    # --------------------------------------------------------
+    # Method: testDivergedFolderMatchesGit
+    # Purpose: Local commit + dirty file + origin ahead → after
+    #          discardThenPull, HEAD matches origin/main.
+    # --------------------------------------------------------
+    def testDivergedFolderMatchesGit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            bare = base / "remote.git"
+            clone = base / "clone"
+            _runGit(base, "init", "--bare", str(bare))
+
+            seed = base / "seed"
+            seed.mkdir()
+            _runGit(seed, "init", "-b", "main")
+            _runGit(seed, "config", "user.email", "test@example.com")
+            _runGit(seed, "config", "user.name", "Test")
+            _writeFile(seed / "remote.txt", "on git\n")
+            _runGit(seed, "add", ".")
+            _runGit(seed, "commit", "-m", "origin tip")
+            _runGit(seed, "remote", "add", "origin", str(bare))
+            _runGit(seed, "push", "-u", "origin", "main")
+            _runGit(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+
+            _runGit(base, "clone", str(bare), str(clone))
+            _runGit(clone, "checkout", "main")
+            _runGit(clone, "config", "user.email", "test@example.com")
+            _runGit(clone, "config", "user.name", "Test")
+            _writeFile(clone / "local.txt", "only local commit\n")
+            _runGit(clone, "add", ".")
+            _runGit(clone, "commit", "-m", "local only")
+            _writeFile(clone / "dirty.txt", "uncommitted\n")
+
+            _writeFile(seed / "remote.txt", "on git updated\n")
+            _runGit(seed, "add", ".")
+            _runGit(seed, "commit", "-m", "origin ahead")
+            _runGit(seed, "push", "origin", "main")
+
+            service = GitService()
+            project = ProjectConfig(
+                id="discard-pull",
+                name="demo",
+                path=str(clone),
+                remote_url=str(bare),
+                default_branch="main",
+            )
+            pull = service.pull(project)
+            assert pull.success is False, pull.message or pull.title
+            ids = [choice.id for choice in pull.choices]
+            assert ActionId.DISCARD_THEN_PULL in ids, (
+                f"{pull.title}: {pull.message}\n{pull.details}"
+            )
+
+            outcome = service.discardThenPull(project)
+            assert outcome.success is True, outcome.message or outcome.title
+
+            origin_sha = subprocess.run(
+                ["git", "rev-parse", "main"],
+                cwd=bare,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            local_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=clone,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            assert local_sha == origin_sha
+            assert not (clone / "local.txt").exists()
+            assert not (clone / "dirty.txt").exists()
+            assert (clone / "remote.txt").read_text(encoding="utf-8") == "on git updated\n"

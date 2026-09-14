@@ -1057,8 +1057,11 @@ class ProjectDetailView:
         if action_id == ActionId.DISCARD_THEN_PULL:
             Dialogs.showConfirm(
                 self.page,
-                title="Discard local changes?",
-                message="All uncommitted local changes will be permanently deleted, then pull will run.",
+                title="Discard local and take Git?",
+                message=(
+                    "This deletes local commits and unsaved files on this computer, "
+                    "then this folder matches Git. Git online is not changed."
+                ),
                 confirm_label="Discard and pull",
                 on_confirm=lambda: self._runDiscardThenPull(),
             )

@@ -46,6 +46,34 @@ class TestActionMapper:
         assert ActionId.VIEW_DIFFS in ids
         assert ActionId.DISCARD_THEN_PULL in ids
         assert ActionId.STASH_THEN_PULL in ids
+        discard = next(c for c in outcome.choices if c.id == ActionId.DISCARD_THEN_PULL)
+        assert "local commits" in discard.description.lower()
+
+    # --------------------------------------------------------
+    # Method: testPullNeedToReconcile
+    # --------------------------------------------------------
+    def testPullNeedToReconcile(self) -> None:
+        outcome = ActionMapper.mapError(
+            "pull",
+            stderr=(
+                "hint: Pulling without specifying how to reconcile divergent branches is\n"
+                "hint: discouraged.\n"
+                "fatal: Need to specify how to reconcile divergent branches."
+            ),
+        )
+        ids = [c.id for c in outcome.choices]
+        assert ActionId.DISCARD_THEN_PULL in ids
+
+    # --------------------------------------------------------
+    # Method: testPullNotPossibleToFastForward
+    # --------------------------------------------------------
+    def testPullNotPossibleToFastForward(self) -> None:
+        outcome = ActionMapper.mapError(
+            "pull",
+            stderr="fatal: Not possible to fast-forward, aborting.",
+        )
+        ids = [c.id for c in outcome.choices]
+        assert ActionId.DISCARD_THEN_PULL in ids
 
     # --------------------------------------------------------
     # Method: testNotARepo

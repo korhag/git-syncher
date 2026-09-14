@@ -128,7 +128,10 @@ class ActionMapper:
                     ActionChoice(
                         ActionId.DISCARD_THEN_PULL,
                         "Discard local then pull",
-                        description="Throw away uncommitted local changes, then pull.",
+                        description=(
+                            "Throw away local commits and unsaved files, "
+                            "then this folder matches Git. Git online is not changed."
+                        ),
                         destructive=True,
                         requires_confirm=True,
                     ),
@@ -362,6 +365,7 @@ class ActionMapper:
             "divergent branches",
             "must be resolved",
             "cannot pull with rebase",
+            "not possible to fast-forward",
         )
         return any(marker in text for marker in markers)
 
