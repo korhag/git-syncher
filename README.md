@@ -10,24 +10,30 @@ instead of raw Git error messages.
 - Python 3.11+ (install will refuse 3.9/3.10 — those can only get Flet 0.28, which cannot start this app)
 - [Git](https://git-scm.com/) installed and available on your `PATH`
 
-On Raspberry Pi OS Bullseye / Debian 11 the system Python is 3.9. `./install.sh` will download a local Python 3.12 with [uv](https://docs.astral.sh/uv/) if needed, and install Flet from PyPI (not piwheels).
+On Raspberry Pi OS Bullseye / Debian 11 the system Python is 3.9. `./scripts/install.sh` will download a local Python 3.12 with [uv](https://docs.astral.sh/uv/) if needed, and install Flet from PyPI (not piwheels).
+
+On Debian / Ubuntu / Raspberry Pi OS the installer also installs missing system packages with `sudo apt`: Git, GTK 3, and `at-spi2-core` (the accessibility bus). On Windows it uses `winget` to install Python 3.12 and Git when they are missing, then asks you to close the window and run the installer again so PATH is updated.
 
 ## Install (once)
 
 **Windows** — double-click or from a terminal:
 
 ```bat
-install.bat
+scripts\install.bat
 ```
 
 **macOS / Linux:**
 
 ```bash
-chmod +x install.sh run.sh   # once
-./install.sh
+chmod +x run.sh scripts/install.sh   # once
+./scripts/install.sh
 ```
 
-This checks for Python (and warns if Git is missing), creates `.venv`, upgrades pip, and installs dependencies.
+This checks for Python and Git, creates `.venv`, upgrades pip, and installs dependencies.
+
+### Raspberry Pi: `Atk-CRITICAL` on startup
+
+If the terminal shows `atk_socket_embed: assertion 'plug_id != NULL' failed`, the accessibility bus is not running. Raspberry Pi OS sets `NO_AT_BRIDGE=1` at login when `at-spi2-core` is not installed, and the Flet window then prints that line. The app still works. `./scripts/install.sh` installs the package; **log out and back in (or reboot) once** afterwards so the warning stops. An already-open terminal keeps the old setting until you do.
 
 ## Run
 
@@ -47,7 +53,7 @@ If `.venv` is missing or was created with Python 3.9 / old Flet, `run` will call
 
 ## First launch
 
-1. Create a **master password** — it encrypts your PATs and project settings on this machine (`data/vault.enc`).
+1. Create a **master password** — it encrypts your PATs and project settings on this machene (`data/vault.enc`).
 2. Click **Add project**, pick a folder, and fill remote URL / username / email / PAT.
 3. Use **Refresh** on the dashboard to check every project against Git.
 4. Open a project for commit, pull, push, per-file compare, or discard.

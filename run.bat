@@ -10,9 +10,9 @@ if "%NEED_INSTALL%"=="0" (
 )
 
 if "%NEED_INSTALL%"=="1" (
-  echo Virtual environment missing or incompatible. Running install.bat...
+  echo Virtual environment missing or incompatible. Running scripts\install.bat...
   echo.
-  call "%~dp0install.bat"
+  call "%~dp0scripts\install.bat"
   if errorlevel 1 exit /b 1
   echo.
 )

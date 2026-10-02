@@ -5,6 +5,21 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-10-02
+
+### Added
+
+- The installer now installs missing system pieces: on Linux, Git, GTK, and the accessibility bus (`at-spi2-core`) via apt; on Windows, Python 3.12 and Git via winget when they are not already there
+
+### Changed
+
+- Install scripts live in `scripts/` (`./scripts/install.sh`, `scripts\install.bat`). `run.sh` / `run.bat` call them from there
+- Python packages are pinned to the versions checked on Raspberry Pi OS (Flet 0.86.5, cryptography 50.0.1, pytest 9.1.1)
+
+### Fixed
+
+- Raspberry Pi no longer prints `Atk-CRITICAL ... atk_socket_embed` when the app starts, once `at-spi2-core` is installed and you log out and back in (or reboot) once
+
 ## [1.15.2] - 2026-09-14
 
 ### Fixed

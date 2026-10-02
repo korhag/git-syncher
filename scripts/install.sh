@@ -1,14 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 MIN_MAJOR=3
 MIN_MINOR=11
+
+# Debian / Ubuntu / Raspberry Pi OS packages the desktop app needs.
+# at-spi2-core provides the accessibility bus. Without it, Raspberry Pi OS
+# sets NO_AT_BRIDGE=1 at login and GTK prints an Atk-CRITICAL warning.
+APT_PACKAGES=(git libgtk-3-0 at-spi2-core)
 
 echo "========================================"
 echo " Git Syncher - Linux/macOS install"
 echo "========================================"
 echo
+
+# ------------------------------------------------------------
+# ensureSystemPackages: Install missing apt packages.
+# sudo is only used when something is actually missing.
+# ------------------------------------------------------------
+ensureSystemPackages() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "apt-get not found — skipping system packages."
+    echo "Install Git yourself if it is not already on PATH."
+    echo
+    return 0
+  fi
+
+  local missing=()
+  local pkg status
+  for pkg in "${APT_PACKAGES[@]}"; do
+    status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+    if [[ "$status" != "install ok installed" ]]; then
+      missing+=("$pkg")
+    fi
+  done
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    echo "System packages already installed: ${APT_PACKAGES[*]}"
+    echo
+    return 0
+  fi
+
+  echo "Installing system packages: ${missing[*]}"
+  echo "(sudo may ask for your password)"
+  echo
+  sudo apt-get update
+  sudo apt-get install -y "${missing[@]}"
+
+  local installed
+  for installed in "${missing[@]}"; do
+    if [[ "$installed" == "at-spi2-core" ]]; then
+      echo
+      echo "Log out and back in (or reboot) once so the accessibility warning disappears."
+      echo
+    fi
+  done
+}
 
 # ------------------------------------------------------------
 # pythonMeetsMin: True if interpreter is Python 3.11+.
@@ -76,6 +124,8 @@ createVenvWithUv() {
   "$uv_bin" venv --python 3.12 --seed .venv
 }
 
+ensureSystemPackages
+
 PYTHON=""
 if PYTHON="$(findSystemPython)"; then
   echo "Using $($PYTHON --version 2>&1) ($PYTHON)"
@@ -125,7 +175,7 @@ fi
 
 if ! pythonMeetsMin ".venv/bin/python"; then
   echo "[ERROR] .venv is still on $(.venv/bin/python --version 2>&1)."
-  echo "Install Python ${MIN_MAJOR}.${MIN_MINOR}+ and re-run ./install.sh"
+  echo "Install Python ${MIN_MAJOR}.${MIN_MINOR}+ and re-run ./scripts/install.sh"
   exit 1
 fi
 
@@ -146,7 +196,7 @@ unset PIP_EXTRA_INDEX_URL
 echo "Installing dependencies from requirements.txt..."
 .venv/bin/python -m pip install --index-url https://pypi.org/simple -r requirements.txt
 
-chmod +x run.sh install.sh 2>/dev/null || true
+chmod +x run.sh scripts/install.sh 2>/dev/null || true
 
 echo
 echo "========================================"

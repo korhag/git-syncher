@@ -12,14 +12,14 @@ venvIsReady() {
 
 if ! venvIsReady; then
   echo "Virtual environment missing or incompatible (need Python 3.11+ and Flet 0.80+)."
-  echo "Running install.sh..."
+  echo "Running scripts/install.sh..."
   echo
-  bash ./install.sh
+  bash ./scripts/install.sh
   echo
 fi
 
 if ! venvIsReady; then
-  echo "[ERROR] Still cannot start. Install Python 3.11+ and run ./install.sh" >&2
+  echo "[ERROR] Still cannot start. Install Python 3.11+ and run ./scripts/install.sh" >&2
   exit 1
 fi
 
