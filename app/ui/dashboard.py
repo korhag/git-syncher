@@ -34,6 +34,25 @@ _ACTION_META: dict[SuggestedAction, tuple[str, str]] = {
     SuggestedAction.UNKNOWN: ("Check", ft.Colors.GREY_400),
 }
 
+# Grid tiles stay at most this wide, so a wide window gets more columns.
+_CARD_MAX_EXTENT = 340
+# Width / height of each tile. Taller than 1.0 so two status lines and the
+# icon row fit without clipping.
+_CARD_ASPECT_RATIO = 1.55
+
+
+# ------------------------------------------------------------
+# Function: cardBorderColor
+# Purpose: Accent color for a project that is not synced with Git.
+#          Synced cards stay unaccented so the ones that need work stand out.
+# Output: Flet color, or None when the project is synced.
+# ------------------------------------------------------------
+def cardBorderColor(action: SuggestedAction) -> Optional[ft.Colors]:
+    if action == SuggestedAction.SYNCED:
+        return None
+    _label, color = _ACTION_META.get(action, ("Check", ft.Colors.GREY_400))
+    return color
+
 
 # ------------------------------------------------------------
 # Class: DashboardView
@@ -60,7 +79,16 @@ class DashboardView:
         self.on_open_project = on_open_project
         self.on_lock = on_lock
         self.statuses: dict[str, ProjectStatus] = {}
-        self.list_column = ft.Column(spacing=6, expand=True, scroll=ft.ScrollMode.AUTO)
+        self.empty_state = self._buildEmptyState()
+        self.card_grid = ft.GridView(
+            expand=True,
+            max_extent=_CARD_MAX_EXTENT,
+            child_aspect_ratio=_CARD_ASPECT_RATIO,
+            spacing=10,
+            run_spacing=10,
+            padding=2,
+            scroll=ft.ScrollMode.AUTO,
+        )
         self.status_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.refresh_button = ft.FilledButton(
             "Refresh",
@@ -135,7 +163,8 @@ class DashboardView:
                 [
                     header,
                     ft.Divider(),
-                    self.list_column,
+                    self.empty_state,
+                    self.card_grid,
                     footer,
                 ],
                 expand=True,
@@ -264,44 +293,56 @@ class DashboardView:
         return True
 
     # --------------------------------------------------------
+    # Method: _buildEmptyState
+    # Purpose: Centered prompt shown when the vault has no projects.
+    #          Kept out of the grid so it is not squeezed into a tile.
+    # --------------------------------------------------------
+    def _buildEmptyState(self) -> ft.Container:
+        return ft.Container(
+            visible=False,
+            expand=True,
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.FOLDER_OFF_OUTLINED, size=48, color=ft.Colors.OUTLINE),
+                    ft.Text("No projects yet", size=18, weight=ft.FontWeight.W_500),
+                    ft.Text(
+                        "Add a folder to start tracking Git status in one place.",
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                    ft.FilledButton(
+                        "Add project",
+                        icon=ft.Icons.ADD,
+                        on_click=lambda _e: self.openAddProjectDialog(),
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=10,
+            ),
+            alignment=ft.Alignment.CENTER,
+            padding=40,
+        )
+
+    # --------------------------------------------------------
     # Method: _rebuildCards
     # Purpose: Render project cards from store + statuses.
     # --------------------------------------------------------
     def _rebuildCards(self) -> None:
-        self.list_column.controls.clear()
+        self.card_grid.controls.clear()
         if not self.store.projects:
-            self.list_column.controls.append(
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Icon(ft.Icons.FOLDER_OFF_OUTLINED, size=48, color=ft.Colors.OUTLINE),
-                            ft.Text("No projects yet", size=18, weight=ft.FontWeight.W_500),
-                            ft.Text(
-                                "Add a folder to start tracking Git status in one place.",
-                                color=ft.Colors.ON_SURFACE_VARIANT,
-                            ),
-                            ft.FilledButton(
-                                "Add project",
-                                icon=ft.Icons.ADD,
-                                on_click=lambda _e: self.openAddProjectDialog(),
-                            ),
-                        ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=10,
-                    ),
-                    alignment=ft.Alignment.CENTER,
-                    padding=40,
-                )
-            )
+            self.empty_state.visible = True
+            self.card_grid.visible = False
             return
 
+        self.empty_state.visible = False
+        self.card_grid.visible = True
         for project in self.store.projects:
             status = self.statuses.get(project.id)
-            self.list_column.controls.append(self._buildCard(project, status))
+            self.card_grid.controls.append(self._buildCard(project, status))
 
     # --------------------------------------------------------
     # Method: _buildCard
-    # Purpose: Compact two-line project row using horizontal space.
+    # Purpose: One grid tile: name, path, status, and actions.
+    #          A colored border marks anything that is not synced.
     # --------------------------------------------------------
     def _buildCard(
         self,
@@ -388,27 +429,34 @@ class DashboardView:
         if branch_name:
             title_row_controls.append(
                 ft.Container(
-                    content=ft.Text(branch_name, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+                    content=ft.Text(
+                        branch_name,
+                        size=11,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
                     padding=ft.Padding.symmetric(horizontal=8, vertical=2),
                     bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
                     border_radius=10,
                 )
             )
 
+        icon_style = ft.ButtonStyle(padding=2)
         action_row = ft.Row(
             [
                 ft.IconButton(
                     icon=ft.Icons.FOLDER_OPEN,
                     tooltip="Open folder in Explorer",
                     icon_size=18,
-                    style=ft.ButtonStyle(padding=4),
+                    style=icon_style,
                     on_click=open_folder,
                 ),
                 ft.IconButton(
                     icon=ft.Icons.PUBLIC,
                     tooltip="Open Git repo in browser",
                     icon_size=18,
-                    style=ft.ButtonStyle(padding=4),
+                    style=icon_style,
                     on_click=open_remote,
                     disabled=not bool(remote),
                 ),
@@ -416,7 +464,7 @@ class DashboardView:
                     icon=ft.Icons.EDIT_OUTLINED,
                     tooltip="Edit project",
                     icon_size=18,
-                    style=ft.ButtonStyle(padding=4),
+                    style=icon_style,
                     on_click=edit_project,
                 ),
                 ft.IconButton(
@@ -424,9 +472,10 @@ class DashboardView:
                     tooltip="Remove from Syncher",
                     icon_size=18,
                     icon_color=ft.Colors.RED_400,
-                    style=ft.ButtonStyle(padding=4),
+                    style=icon_style,
                     on_click=remove_project,
                 ),
+                ft.Container(expand=True),
                 ft.Container(
                     content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=color),
                     padding=ft.Padding.symmetric(horizontal=10, vertical=4),
@@ -434,62 +483,57 @@ class DashboardView:
                     border_radius=16,
                     on_click=quick_action,
                 ),
-                ft.Icon(ft.Icons.CHEVRON_RIGHT, size=18),
             ],
-            spacing=4,
-            wrap=True,
-            run_spacing=4,
+            spacing=0,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
         if compare_lines:
-            status_block: ft.Control = ft.Column(
-                [
-                    ft.Text(
-                        line,
-                        size=12,
-                        max_lines=2,
-                        overflow=ft.TextOverflow.ELLIPSIS,
-                    )
-                    for line in compare_lines
-                ],
-                spacing=0,
-                tight=True,
-            )
+            status_text = "\n".join(compare_lines)
         else:
-            status_block = ft.Text(
-                status_sentence,
-                size=12,
-                max_lines=2,
-                overflow=ft.TextOverflow.ELLIPSIS,
-            )
+            status_text = status_sentence
+        status_block = ft.Text(
+            status_text,
+            size=12,
+            max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
 
-        return ft.Card(
-            content=ft.Container(
-                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                ink=True,
-                on_click=open_detail,
-                content=ft.Column(
-                    [
-                        ft.Row(
-                            title_row_controls,
-                            spacing=8,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                        action_row,
-                        ft.Text(
-                            project.path,
-                            size=11,
-                            color=ft.Colors.ON_SURFACE_VARIANT,
-                            max_lines=2,
-                            overflow=ft.TextOverflow.ELLIPSIS,
-                        ),
-                        status_block,
-                    ],
-                    spacing=6,
-                    tight=True,
-                ),
-            )
+        accent = cardBorderColor(action)
+        if accent is None:
+            border = ft.Border.all(1, ft.Colors.OUTLINE_VARIANT)
+        else:
+            border = ft.Border.all(2, accent)
+
+        return ft.Container(
+            expand=True,
+            border=border,
+            border_radius=12,
+            bgcolor=ft.Colors.SURFACE_CONTAINER,
+            padding=10,
+            ink=True,
+            on_click=open_detail,
+            content=ft.Column(
+                [
+                    ft.Row(
+                        title_row_controls,
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(
+                        project.path,
+                        size=11,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        tooltip=project.path,
+                    ),
+                    ft.Container(content=status_block, expand=True),
+                    action_row,
+                ],
+                spacing=6,
+                expand=True,
+            ),
         )
 
     # --------------------------------------------------------
