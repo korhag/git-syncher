@@ -12,6 +12,7 @@ from app.core.git_service import GitService
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.restart import restartApp
 from app.core.store import VaultStore
+from app.core.updater import UpdateResult, updateApp
 from app.models.account import VaultAccount, findAccountByKey
 from app.models.project import ProjectConfig, ProjectStatus, SuggestedAction
 from app.ui.busy import BusyOverlay
@@ -97,8 +98,8 @@ class DashboardView:
                         ),
                         ft.IconButton(
                             icon=ft.Icons.RESTART_ALT,
-                            tooltip="Restart Git Syncher",
-                            on_click=lambda _e: self._confirmRestart(),
+                            tooltip="Update from Git and restart",
+                            on_click=lambda _e: self._confirmUpdate(),
                         ),
                         ft.IconButton(
                             icon=ft.Icons.LOCK,
@@ -142,28 +143,68 @@ class DashboardView:
         )
 
     # --------------------------------------------------------
-    # Method: _confirmRestart
-    # Purpose: Confirm, then relaunch via run.bat / run.sh and exit.
+    # Method: _confirmUpdate
+    # Purpose: Confirm, download this app from Git, refresh the menu
+    #          icon, then relaunch. Offer a plain restart if that fails.
     # --------------------------------------------------------
-    def _confirmRestart(self) -> None:
-        def do_restart() -> None:
-            if not restartApp(self.page):
-                Dialogs.showSnack(
-                    self.page,
-                    "Could not find run.bat / run.sh next to the app.",
-                    error=True,
-                )
+    def _confirmUpdate(self) -> None:
+        def do_update() -> None:
+            def work() -> UpdateResult:
+                return updateApp()
+
+            def done(result: Optional[UpdateResult], error: Optional[BaseException]) -> None:
+                if error is not None or result is None or not result.ok:
+                    if error is not None:
+                        reason = str(error)
+                    elif result is not None:
+                        reason = result.message
+                    else:
+                        reason = "Update failed."
+                    self._offerRestartAnyway(reason)
+                    return
+                self._restartOrWarn()
+
+            self.busy.runOrSnack("Updating from Git…", work, on_done=done)
 
         Dialogs.showYesNo(
             self.page,
-            title="Restart Git Syncher?",
+            title="Update and restart?",
             message=(
-                "This closes the app and starts it again "
-                "(run.bat on Windows, run.sh on Linux/macOS)."
+                "This downloads the latest Git Syncher from Git, "
+                "refreshes the Start Menu or application menu icon, "
+                "then starts the app again."
             ),
-            confirm_label="Restart",
-            on_confirm=do_restart,
+            confirm_label="Update and restart",
+            on_confirm=do_update,
         )
+
+    # --------------------------------------------------------
+    # Method: _offerRestartAnyway
+    # Purpose: Update failed. Let the user keep working or relaunch
+    #          the version that is already installed.
+    # --------------------------------------------------------
+    def _offerRestartAnyway(self, reason: str) -> None:
+        Dialogs.showWarningChoice(
+            self.page,
+            title="Update failed",
+            message=f"{reason}\n\nRestart the current version anyway?",
+            stay_label="Stay",
+            continue_label="Restart anyway",
+            on_stay=lambda: None,
+            on_continue=self._restartOrWarn,
+        )
+
+    # --------------------------------------------------------
+    # Method: _restartOrWarn
+    # Purpose: Relaunch via the venv interpreter, or explain why not.
+    # --------------------------------------------------------
+    def _restartOrWarn(self) -> None:
+        if not restartApp(self.page):
+            Dialogs.showSnack(
+                self.page,
+                "Could not find the app's Python. Run the installer again.",
+                error=True,
+            )
 
     # --------------------------------------------------------
     # Method: refreshAll

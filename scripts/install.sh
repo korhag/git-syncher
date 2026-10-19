@@ -198,8 +198,15 @@ echo "Installing dependencies from requirements.txt..."
 
 chmod +x run.sh scripts/install.sh 2>/dev/null || true
 
+echo "Creating the application menu shortcut..."
+if ! .venv/bin/python -m app.core.shortcuts; then
+  echo "[WARN] The application menu shortcut was not created."
+  echo
+fi
+
 echo
 echo "========================================"
 echo " Install complete."
 echo " Start the app with:  ./run.sh"
+echo " Or use the Git Syncher icon in the application menu."
 echo "========================================"

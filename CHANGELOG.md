@@ -5,6 +5,17 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-10-19
+
+### Added
+
+- Install adds a **Git Syncher** icon to the Start Menu on Windows and the application menu on Linux. It starts the app from this folder
+- The dashboard restart button downloads the latest Git Syncher from Git, reinstalls dependencies when they changed, refreshes that icon, then starts the new version. If the download fails, you can restart the current version anyway
+
+### Changed
+
+- Restart no longer only relaunches the copy already on disk. It updates from Git first
+
 ## [1.16.0] - 2026-10-02
 
 ### Added

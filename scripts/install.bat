@@ -112,9 +112,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo Creating the Start Menu shortcut...
+".venv\Scripts\python.exe" -m app.core.shortcuts
+if errorlevel 1 (
+  echo [WARN] The Start Menu shortcut was not created.
+  echo.
+)
+
 echo.
 echo ========================================
 echo  Install complete.
 echo  Start the app with:  run.bat
+echo  Or use the Git Syncher icon in the Start Menu.
 echo ========================================
 exit /b 0

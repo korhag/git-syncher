@@ -29,7 +29,7 @@ chmod +x run.sh scripts/install.sh   # once
 ./scripts/install.sh
 ```
 
-This checks for Python and Git, creates `.venv`, upgrades pip, and installs dependencies.
+This checks for Python and Git, creates `.venv`, upgrades pip, and installs dependencies. It also adds a **Git Syncher** icon to the Start Menu (Windows) or the application menu (Linux). The icon starts the app from this folder. Run the installer again if you move the folder. macOS does not get a menu icon.
 
 ### Raspberry Pi: `Atk-CRITICAL` on startup
 
@@ -50,6 +50,12 @@ run.bat
 ```
 
 If `.venv` is missing or was created with Python 3.9 / old Flet, `run` will call the install script first.
+
+On Windows and Linux you can also start it from the **Git Syncher** icon in the Start Menu or application menu after installing.
+
+## Update
+
+The restart icon on the dashboard (**Update from Git and restart**) downloads the latest Git Syncher, reinstalls Python packages when `requirements.txt` changed, refreshes the menu icon, and starts the app again. If the download fails (no network, or you have local edits in this folder), you can restart the current version anyway.
 
 ## First launch
 
