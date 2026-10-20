@@ -10,6 +10,7 @@ from app.core.instance_lock import (
     showAlreadyRunningAndExit,
 )
 from app.core.store import VaultStore
+from app.core.vault_registry import VaultRegistry
 from app.models.project import ProjectStatus
 from app.ui.busy import BusyOverlay
 from app.ui.dashboard import DashboardView
@@ -27,11 +28,15 @@ from app.ui.unlock import UnlockView
 class GitSyncherApp:
     # --------------------------------------------------------
     # Method: __init__
-    # Purpose: Create shared store and git service instances.
+    # Purpose: Create the vault registry, store, and git service.
     # --------------------------------------------------------
     def __init__(self, page: ft.Page) -> None:
         self.page = page
+        self.registry = VaultRegistry()
         self.store = VaultStore()
+        last = self.registry.last()
+        if last is not None:
+            self.store.selectVault(self.registry.pathFor(last))
         self.git = GitService()
         self.dashboard: DashboardView | None = None
         self.busy = BusyOverlay(page)
@@ -188,12 +193,16 @@ class GitSyncherApp:
     # --------------------------------------------------------
     def showUnlock(self) -> None:
         self.clear()
+        last = self.registry.last()
+        if last is not None:
+            self.store.selectVault(self.registry.pathFor(last))
         view = UnlockView(
             page=self.page,
             store=self.store,
             on_unlocked=self.showDashboard,
             git_available=self.git.isGitAvailable(),
             git_version=self.git.gitVersion(),
+            registry=self.registry,
         )
         self.root_content.content = view.build()
         self.page.update()

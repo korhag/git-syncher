@@ -6,7 +6,7 @@ import flet as ft
 
 from app.core.actions import ActionChoice, ActionId, ActionOutcome
 from app.core.changelog import ChangelogParser
-from app.core.git_service import GitService
+from app.core.git_service import GitService, PullPreview
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.store import VaultStore
 from app.models.project import (
@@ -769,7 +769,51 @@ class ProjectDetailView:
 
         self.busy.runOrSnack("Committing…", work, on_done=done)
 
+    # --------------------------------------------------------
+    # Method: doPull
+    # Purpose: Make this folder identical to Git. Confirm only when
+    #          local commits or files would be deleted.
+    # --------------------------------------------------------
     def doPull(self) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def work() -> PullPreview:
+            return self.git.previewPull(project)
+
+        def done(
+            preview: Optional[PullPreview],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert preview is not None
+            if preview.outcome is not None and not preview.outcome.success:
+                self._handleOutcome(preview.outcome, retry=self.doPull)
+                return
+            if preview.would_lose_local:
+                Dialogs.showConfirm(
+                    self.page,
+                    title="Replace this computer with Git?",
+                    message=(
+                        "Pull will replace this computer with Git. "
+                        "Local commits and files will be deleted."
+                    ),
+                    confirm_label="Pull",
+                    on_confirm=self._runPull,
+                )
+                return
+            self._runPull()
+
+        self.busy.runOrSnack("Checking Git…", work, on_done=done)
+
+    # --------------------------------------------------------
+    # Method: _runPull
+    # Purpose: Reset this folder to Git after any confirm.
+    # --------------------------------------------------------
+    def _runPull(self) -> None:
         project = self.project
         if not project:
             return
@@ -795,34 +839,12 @@ class ProjectDetailView:
 
         self.busy.runOrSnack("Pulling…", work, on_done=done)
 
-    # --------------------------------------------------------
-    # Method: _pullCurrentBranch
-    # Purpose: Pull the branch this computer is on (not a stale default).
-    # --------------------------------------------------------
-    def _pullCurrentBranch(self) -> None:
-        project = self.project
-        if not project:
-            return
-
-        def work() -> ActionOutcome:
-            current = self.git.detectBranch(project.path)
-            return self.git.pull(project, branch=current or None)
-
-        def done(
-            outcome: Optional[ActionOutcome],
-            error: Optional[BaseException],
-        ) -> None:
-            if error is not None:
-                Dialogs.showSnack(self.page, str(error), error=True)
-                return
-            assert outcome is not None
-            self._handleOutcome(outcome, retry=self._pullCurrentBranch)
-            if outcome.success:
-                self.reloadAsync(silent=True)
-
-        self.busy.runOrSnack("Pulling…", work, on_done=done)
-
-    def doPush(self, force: bool = False, set_upstream: bool = False) -> None:
+    def doPush(
+        self,
+        force: bool = False,
+        set_upstream: bool = False,
+        confirmed: bool = False,
+    ) -> None:
         project = self.project
         if not project:
             return
@@ -854,9 +876,30 @@ class ProjectDetailView:
                 assert result is not None
                 outcome, tag_outcome, push_tag = result
                 if not outcome.success:
+                    if outcome.title == "Push rejected":
+                        Dialogs.showConfirm(
+                            self.page,
+                            title="Overwrite Git?",
+                            message=outcome.message
+                            or (
+                                "Git has commits you do not have. "
+                                "Overwrite Git with this computer?"
+                            ),
+                            confirm_label="Overwrite Git",
+                            on_confirm=lambda: self.doPush(
+                                force=True,
+                                set_upstream=False,
+                                confirmed=True,
+                            ),
+                        )
+                        return
                     self._handleOutcome(
                         outcome,
-                        retry=lambda: self.doPush(force=force, set_upstream=set_upstream),
+                        retry=lambda: self.doPush(
+                            force=force,
+                            set_upstream=set_upstream,
+                            confirmed=confirmed,
+                        ),
                     )
                     return
 
@@ -888,6 +931,9 @@ class ProjectDetailView:
             self.busy.runOrSnack("Pushing…", work, on_done=done)
 
         if force:
+            if confirmed:
+                run_push(None)
+                return
             current = self.git.detectBranch(project.path) or project.default_branch or "…"
             remote_default = ""
             if self.status and self.status.remote_default_branch:
@@ -976,9 +1022,6 @@ class ProjectDetailView:
         if action_id == ActionId.PULL_FIRST:
             self.doPull()
             return
-        if action_id == ActionId.PULL_CURRENT_BRANCH:
-            self._pullCurrentBranch()
-            return
         if action_id == ActionId.OVERWRITE_REMOTE:
             self.doPush(force=True, set_upstream=False)
             return
@@ -1034,38 +1077,6 @@ class ProjectDetailView:
             return
         if not project:
             return
-        if action_id == ActionId.STASH_THEN_PULL:
-            def stash_work() -> ActionOutcome:
-                return self.git.stashThenPull(project)
-
-            def stash_done(
-                outcome: Optional[ActionOutcome],
-                error: Optional[BaseException],
-            ) -> None:
-                if error is not None:
-                    Dialogs.showSnack(self.page, str(error), error=True)
-                    return
-                assert outcome is not None
-                self._handleOutcome(
-                    outcome, retry=lambda: self._dispatchAction(action_id)
-                )
-                if outcome.success:
-                    self.reloadAsync(silent=True)
-
-            self.busy.runOrSnack("Stashing and pulling…", stash_work, on_done=stash_done)
-            return
-        if action_id == ActionId.DISCARD_THEN_PULL:
-            Dialogs.showConfirm(
-                self.page,
-                title="Discard local and take Git?",
-                message=(
-                    "This deletes local commits and unsaved files on this computer, "
-                    "then this folder matches Git. Git online is not changed."
-                ),
-                confirm_label="Discard and pull",
-                on_confirm=lambda: self._runDiscardThenPull(),
-            )
-            return
         if action_id == ActionId.MATCH_REMOTE:
             Dialogs.showConfirm(
                 self.page,
@@ -1097,28 +1108,6 @@ class ProjectDetailView:
 
             self.busy.runOrSnack("Initializing Git…", init_work, on_done=init_done)
             return
-
-    def _runDiscardThenPull(self) -> None:
-        project = self.project
-        if not project:
-            return
-
-        def work() -> ActionOutcome:
-            return self.git.discardThenPull(project)
-
-        def done(
-            outcome: Optional[ActionOutcome],
-            error: Optional[BaseException],
-        ) -> None:
-            if error is not None:
-                Dialogs.showSnack(self.page, str(error), error=True)
-                return
-            assert outcome is not None
-            self._handleOutcome(outcome)
-            if outcome.success:
-                self.reloadAsync(silent=True)
-
-        self.busy.runOrSnack("Discarding and pulling…", work, on_done=done)
 
     # --------------------------------------------------------
     # Method: _runMatchRemote

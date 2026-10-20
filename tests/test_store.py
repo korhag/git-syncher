@@ -312,3 +312,53 @@ class TestVaultAccounts:
             assert data["version"] == VAULT_VERSION
             assert "accounts" in data
             assert len(data["accounts"]) == 1
+
+
+# ------------------------------------------------------------
+# Tests: VaultStore.selectVault keeps vaults isolated
+# ------------------------------------------------------------
+class TestSelectVault:
+    # --------------------------------------------------------
+    # Method: testTwoVaultsKeepSeparateProjectsAndPasswords
+    # --------------------------------------------------------
+    def testTwoVaultsKeepSeparateProjectsAndPasswords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder_a = Path(tmp) / "repo-a"
+            folder_b = Path(tmp) / "repo-b"
+            folder_a.mkdir()
+            folder_b.mkdir()
+            path_a = Path(tmp) / "a.enc"
+            path_b = Path(tmp) / "b.enc"
+            store = VaultStore(vault_path=path_a)
+            store.createVault("password-a")
+            store.addProject(
+                ProjectConfig(
+                    id="pa",
+                    name="Alpha",
+                    path=str(folder_a),
+                    default_branch="main",
+                )
+            )
+
+            store.selectVault(path_b)
+            assert store.projects == []
+            assert store.crypto is None or not store.crypto.isUnlocked()
+            store.createVault("password-b")
+            store.addProject(
+                ProjectConfig(
+                    id="pb",
+                    name="Beta",
+                    path=str(folder_b),
+                    default_branch="main",
+                )
+            )
+
+            store.selectVault(path_a)
+            assert store.unlockVault("password-b") is False
+            assert store.unlockVault("password-a") is True
+            assert [project.name for project in store.projects] == ["Alpha"]
+
+            store.selectVault(path_b)
+            assert store.unlockVault("password-a") is False
+            assert store.unlockVault("password-b") is True
+            assert [project.name for project in store.projects] == ["Beta"]

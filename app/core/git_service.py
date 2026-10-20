@@ -49,6 +49,20 @@ class GitResult:
 
 
 # ------------------------------------------------------------
+# Class: PullPreview
+# Purpose: What Pull would do, before it deletes anything.
+#          outcome is set when Pull cannot run (fetch failed, or
+#          Git has no branches). would_lose_local is true when
+#          local commits or files would be deleted.
+# ------------------------------------------------------------
+@dataclass
+class PullPreview:
+    outcome: Optional[ActionOutcome] = None
+    remote_ref: str = ""
+    would_lose_local: bool = False
+
+
+# ------------------------------------------------------------
 # Class: GitService
 # Purpose: Cross-platform Git CLI wrapper with status, commit,
 #          pull, push, discard, and credential injection.
@@ -885,36 +899,77 @@ class GitService:
 
     # --------------------------------------------------------
     # Method: pull
-    # Purpose: Pull from origin for the branch you are on.
-    #          Always pass --ff-only (or --rebase) so Git 2.27+ does not
-    #          refuse until pull.rebase is configured.
+    # Purpose: Make this folder identical to Git. Fetches, checks out
+    #          the remote branch (the current name if Git has it,
+    #          otherwise the remote default), then hard-resets and
+    #          cleans. Local commits and files are deleted.
+    # Input: project (ProjectConfig)
+    # Output: ActionOutcome
     # --------------------------------------------------------
-    def pull(
-        self,
-        project: ProjectConfig,
-        rebase: bool = False,
-        branch: Optional[str] = None,
-    ) -> ActionOutcome:
+    def pull(self, project: ProjectConfig) -> ActionOutcome:
+        return self.resetToRemote(project, prefer_current=True)
+
+    # --------------------------------------------------------
+    # Method: previewPull
+    # Purpose: Fetch and report whether Pull would delete local work,
+    #          without changing the folder. The UI confirms only then.
+    # Input: project (ProjectConfig)
+    # Output: PullPreview
+    # --------------------------------------------------------
+    def previewPull(self, project: ProjectConfig) -> PullPreview:
         root = Path(project.path)
-        current = self.detectBranch(root)
-        target = (branch or current or project.default_branch or "main").strip()
-        args = ["pull"]
-        if rebase:
-            args.append("--rebase")
-        else:
-            args.append("--ff-only")
-        args.extend(["origin", target])
-        result = self._runWithAuth(args, cwd=root, project=project, timeout=120)
-        if result.ok:
-            return ActionMapper.success("Pull complete", result.stdout.strip())
-        return ActionMapper.mapError(
-            "pull",
-            result.stderr,
-            result.stdout,
-            result.returncode,
-            local_branch=current or target,
-            requested_branch=target,
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=120,
         )
+        if not fetch.ok:
+            return PullPreview(
+                outcome=ActionMapper.mapError(
+                    "fetch",
+                    fetch.stderr,
+                    fetch.stdout,
+                    fetch.returncode,
+                    local_branch=self.detectBranch(root),
+                )
+            )
+        remote_ref = self._resolveOriginBranch(root, project, prefer_current=True)
+        if not remote_ref:
+            return PullPreview(
+                outcome=self._noOriginBranchOutcome(
+                    root,
+                    fetch.stdout + "\n" + fetch.stderr,
+                )
+            )
+        return PullPreview(
+            remote_ref=remote_ref,
+            would_lose_local=self._pullWouldLoseLocal(root, remote_ref),
+        )
+
+    # --------------------------------------------------------
+    # Method: _pullWouldLoseLocal
+    # Purpose: True when Pull would delete commits or files.
+    #          Unrelated histories count as local commits, because
+    #          none of them exist on the remote ref.
+    # Input: root (Path), remote_ref (str) such as origin/master
+    # Output: bool
+    # --------------------------------------------------------
+    def _pullWouldLoseLocal(self, root: Path, remote_ref: str) -> bool:
+        if self.listChanges(root):
+            return True
+        if not self._hasLocalCommits(root):
+            return False
+        ahead = self._run(
+            ["rev-list", "--count", f"{remote_ref}..HEAD"],
+            cwd=root,
+        )
+        if not ahead.ok:
+            return True
+        try:
+            return int(ahead.stdout.strip() or "0") > 0
+        except ValueError:
+            return True
 
     # --------------------------------------------------------
     # Method: push
@@ -929,6 +984,23 @@ class GitService:
     ) -> ActionOutcome:
         root = Path(project.path)
         branch = self.detectBranch(root) or project.default_branch or "main"
+        if force:
+            # Refresh origin/<branch> so --force-with-lease sees the real
+            # tip, not a stale tracking ref from an earlier fetch.
+            fetched = self._runWithAuth(
+                ["fetch", "origin"],
+                cwd=root,
+                project=project,
+                timeout=120,
+            )
+            if not fetched.ok:
+                return ActionMapper.mapError(
+                    "fetch",
+                    fetched.stderr,
+                    fetched.stdout,
+                    fetched.returncode,
+                    local_branch=branch,
+                )
         remote_ref_ok = self._run(
             ["rev-parse", "--verify", f"origin/{branch}"],
             cwd=root,
@@ -1226,36 +1298,18 @@ class GitService:
         )
 
     # --------------------------------------------------------
-    # Method: stashThenPull
-    # Purpose: Stash local changes, pull, leave stash for user.
-    # --------------------------------------------------------
-    def stashThenPull(self, project: ProjectConfig) -> ActionOutcome:
-        root = Path(project.path)
-        stash = self._run(["stash", "push", "-u", "-m", "git-syncher auto-stash"], cwd=root)
-        if not stash.ok and "no local changes" not in (stash.stderr + stash.stdout).lower():
-            return ActionMapper.mapError("stash", stash.stderr, stash.stdout, stash.returncode)
-        pull_outcome = self.pull(project)
-        if pull_outcome.success:
-            pull_outcome.message = (
-                (pull_outcome.message or "")
-                + "\nLocal changes were stashed. Use git stash pop if you need them back."
-            ).strip()
-        return pull_outcome
-
-    # --------------------------------------------------------
-    # Method: discardThenPull
-    # Purpose: After confirm, make this folder identical to Git
-    #          (fetch + hard reset to origin + clean). Git online unchanged.
-    # --------------------------------------------------------
-    def discardThenPull(self, project: ProjectConfig) -> ActionOutcome:
-        return self.resetToRemote(project)
-
-    # --------------------------------------------------------
     # Method: resetToRemote
     # Purpose: Make this computer identical to origin (Git unchanged).
     #          Fetch, hard-reset to origin/<branch>, then clean.
+    # Input: project (ProjectConfig); prefer_current — try the branch
+    #        this computer is on before the remote default (Pull).
+    # Output: ActionOutcome
     # --------------------------------------------------------
-    def resetToRemote(self, project: ProjectConfig) -> ActionOutcome:
+    def resetToRemote(
+        self,
+        project: ProjectConfig,
+        prefer_current: bool = False,
+    ) -> ActionOutcome:
         root = Path(project.path)
         fetch = self._runWithAuth(
             ["fetch", "--prune", "origin"],
@@ -1272,25 +1326,36 @@ class GitService:
                 local_branch=self.detectBranch(root),
             )
 
-        remote_ref = self._resolveOriginBranch(root, project)
+        remote_ref = self._resolveOriginBranch(
+            root,
+            project,
+            prefer_current=prefer_current,
+        )
         if not remote_ref:
-            return ActionOutcome(
-                title="Remote branch not found",
-                message=(
-                    "Git has no branches yet — there is nothing to match. "
-                    "Commit if needed, then send this branch to Git (first push)."
-                ),
-                choices=[
-                    ActionChoice(
-                        ActionId.FIRST_PUSH,
-                        "Send this branch to Git",
-                        description="Create this branch on the remote (first push).",
-                    ),
-                    ActionChoice(ActionId.OPEN_SETTINGS, "Open project settings"),
-                    ActionChoice(ActionId.CANCEL, "Cancel"),
-                ],
-                details=fetch.stdout + "\n" + fetch.stderr,
+            return self._noOriginBranchOutcome(
+                root,
+                fetch.stdout + "\n" + fetch.stderr,
             )
+
+        # Untracked files block checkout when Git already has those paths.
+        # Pull is allowed to delete them; do it before switching branches.
+        preclean = self._run(["clean", "-fd"], cwd=root)
+        if not preclean.ok:
+            return ActionMapper.mapError(
+                "clean",
+                preclean.stderr,
+                preclean.stdout,
+                preclean.returncode,
+            )
+        if self._hasLocalCommits(root):
+            wiped = self._run(["reset", "--hard", "HEAD"], cwd=root)
+            if not wiped.ok:
+                return ActionMapper.mapError(
+                    "reset",
+                    wiped.stderr,
+                    wiped.stdout,
+                    wiped.returncode,
+                )
 
         # Point local branch at the remote tip (does not change Git online).
         branch_name = remote_ref.removeprefix("origin/")
@@ -1305,6 +1370,15 @@ class GitService:
                     reset.stdout or checkout.stdout,
                     reset.returncode or checkout.returncode,
                 )
+            if self.detectBranch(root) != branch_name:
+                renamed = self._run(["branch", "-M", branch_name], cwd=root)
+                if not renamed.ok:
+                    return ActionMapper.mapError(
+                        "branch",
+                        renamed.stderr or checkout.stderr,
+                        renamed.stdout,
+                        renamed.returncode,
+                    )
         else:
             reset = self._run(["reset", "--hard", remote_ref], cwd=root)
             if not reset.ok:
@@ -1327,9 +1401,41 @@ class GitService:
         if project.default_branch != branch_name:
             project.default_branch = branch_name
 
+        # Remember origin/<branch> as this branch's upstream.
+        self._run(
+            ["branch", "--set-upstream-to", remote_ref, branch_name],
+            cwd=root,
+        )
+
         return ActionMapper.success(
             "This computer now matches Git",
             f"Reset to {remote_ref}",
+        )
+
+    # --------------------------------------------------------
+    # Method: _noOriginBranchOutcome
+    # Purpose: Dialog when Git has no branch to match (empty remote).
+    # Input: root (Path), details (str) — fetch output
+    # Output: ActionOutcome
+    # --------------------------------------------------------
+    def _noOriginBranchOutcome(self, root: Path, details: str = "") -> ActionOutcome:
+        branch = self.detectBranch(root) or "this branch"
+        return ActionOutcome(
+            title="Remote branch not found",
+            message=(
+                "Git has no branches yet — there is nothing to match. "
+                "Commit if needed, then send this branch to Git (first push)."
+            ),
+            choices=[
+                ActionChoice(
+                    ActionId.FIRST_PUSH,
+                    "Send this branch to Git",
+                    description=f"Create {branch} on the remote (first push).",
+                ),
+                ActionChoice(ActionId.OPEN_SETTINGS, "Open project settings"),
+                ActionChoice(ActionId.CANCEL, "Cancel"),
+            ],
+            details=details,
         )
 
     # --------------------------------------------------------
@@ -1405,19 +1511,30 @@ class GitService:
 
     # --------------------------------------------------------
     # Method: _resolveOriginBranch
-    # Purpose: Pick origin/<branch> for hard reset — Git default first.
+    # Purpose: Pick origin/<branch> for hard reset.
+    #          Match-Git prefers the remote default. Pull prefers the
+    #          branch this computer is already on, when Git has it.
+    # Input: prefer_current (bool) — current branch first when True
+    # Output: str — "origin/<name>", or "" when none exist
     # --------------------------------------------------------
-    def _resolveOriginBranch(self, root: Path, project: ProjectConfig) -> str:
+    def _resolveOriginBranch(
+        self,
+        root: Path,
+        project: ProjectConfig,
+        prefer_current: bool = False,
+    ) -> str:
         candidates: list[str] = []
+        current = self.detectBranch(root)
+        if prefer_current and current:
+            candidates.append(current)
         remote_default = self.detectRemoteDefaultBranch(root)
-        if remote_default:
+        if remote_default and remote_default not in candidates:
             candidates.append(remote_default)
         if project.default_branch and project.default_branch not in candidates:
             candidates.append(project.default_branch)
         for name in ("main", "master"):
             if name not in candidates:
                 candidates.append(name)
-        current = self.detectBranch(root)
         if current and current not in candidates:
             candidates.append(current)
 

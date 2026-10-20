@@ -14,10 +14,10 @@ from app.models.project import ProjectConfig
 VAULT_VERSION = 2
 
 
-# Shown when vault.enc is empty or not valid JSON (not a wrong password).
+# Shown when the vault file is empty or not valid JSON (not a wrong password).
 VAULT_DAMAGED_MESSAGE = (
     "The vault file is empty or damaged (often after a crash while saving). "
-    "Use Restore backup if you have vault.enc.bak, or Start over to create a new vault "
+    "Use Restore backup if you have a backup, or Start over to create a new vault "
     "and re-add projects."
 )
 
@@ -67,6 +67,15 @@ class VaultStore:
     # --------------------------------------------------------
     def vaultExists(self) -> bool:
         return self.vault_path.is_file()
+
+    # --------------------------------------------------------
+    # Method: selectVault
+    # Purpose: Point this store at another vault file and drop
+    #          any unlocked secrets from the previous one.
+    # --------------------------------------------------------
+    def selectVault(self, path: Path) -> None:
+        self.lock()
+        self.vault_path = path
 
     # --------------------------------------------------------
     # Method: backupExists

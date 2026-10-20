@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 
 from app.core.git_service import GitService
-from app.core.actions import ActionId
 from app.models.project import ProjectConfig, SuggestedAction
 
 
@@ -379,13 +378,13 @@ class TestHonorSavedBranchAndForcePush:
 
 
 # ------------------------------------------------------------
-# Tests: discardThenPull resets to origin
+# Tests: pull resets a diverged folder to origin
 # ------------------------------------------------------------
 class TestDiscardThenPull:
     # --------------------------------------------------------
     # Method: testDivergedFolderMatchesGit
-    # Purpose: Local commit + dirty file + origin ahead → after
-    #          discardThenPull, HEAD matches origin/main.
+    # Purpose: Local commit + dirty file + origin ahead → Pull
+    #          makes HEAD match origin/main.
     # --------------------------------------------------------
     def testDivergedFolderMatchesGit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -428,14 +427,12 @@ class TestDiscardThenPull:
                 remote_url=str(bare),
                 default_branch="main",
             )
-            pull = service.pull(project)
-            assert pull.success is False, pull.message or pull.title
-            ids = [choice.id for choice in pull.choices]
-            assert ActionId.DISCARD_THEN_PULL in ids, (
-                f"{pull.title}: {pull.message}\n{pull.details}"
-            )
+            preview = service.previewPull(project)
+            assert preview.outcome is None
+            assert preview.would_lose_local is True
+            assert preview.remote_ref == "origin/main"
 
-            outcome = service.discardThenPull(project)
+            outcome = service.pull(project)
             assert outcome.success is True, outcome.message or outcome.title
 
             origin_sha = subprocess.run(

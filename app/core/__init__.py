@@ -1,4 +1,4 @@
 # ------------------------------------------------------------
 # Package: app.core
-# Purpose: Core services — crypto, store, git, changelog, actions.
+# Purpose: Core services — crypto, store, vaults, git, changelog, actions.
 # ------------------------------------------------------------

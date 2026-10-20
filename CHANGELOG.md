@@ -5,6 +5,28 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-10-20
+
+### Changed
+
+- Pull makes this folder identical to Git, including when the local branch name does not exist on Git (for example local `main` and Git `master`). It asks once, and only when local commits or files would be deleted
+- If Push is rejected because Git has commits this computer does not have, one confirmation overwrites Git with this computer
+
+### Removed
+
+- Stash-then-pull and discard-then-pull choices. Pull itself replaces this computer with Git when you confirm
+
+## [1.19.0] - 2026-10-20
+
+### Added
+
+- The opening screen lets you pick a vault or create a new one. Each vault has its own password and its own projects
+- The app remembers the last vault and asks for that password the next time it starts
+
+### Changed
+
+- An existing vault is kept and shown as a vault named Default
+
 ## [1.18.0] - 2026-10-19
 
 ### Added

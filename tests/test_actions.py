@@ -27,10 +27,14 @@ class TestActionMapper:
             "push",
             stderr="! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs",
         )
+        assert outcome.title == "Push rejected"
+        assert "Overwrite Git with this computer" in outcome.message
         ids = [c.id for c in outcome.choices]
-        assert ActionId.PULL_FIRST in ids
+        assert ActionId.PULL_FIRST not in ids
         assert ActionId.OVERWRITE_REMOTE in ids
+        assert ActionId.CANCEL in ids
         overwrite = next(c for c in outcome.choices if c.id == ActionId.OVERWRITE_REMOTE)
+        assert overwrite.label == "Overwrite Git"
         assert overwrite.destructive is True
         assert overwrite.requires_confirm is True
 
@@ -43,11 +47,9 @@ class TestActionMapper:
             stderr="error: Your local changes to the following files would be overwritten by merge",
         )
         ids = [c.id for c in outcome.choices]
-        assert ActionId.VIEW_DIFFS in ids
-        assert ActionId.DISCARD_THEN_PULL in ids
-        assert ActionId.STASH_THEN_PULL in ids
-        discard = next(c for c in outcome.choices if c.id == ActionId.DISCARD_THEN_PULL)
-        assert "local commits" in discard.description.lower()
+        assert ActionId.RETRY in ids
+        assert ActionId.CANCEL in ids
+        assert outcome.title.startswith("Git pull")
 
     # --------------------------------------------------------
     # Method: testPullNeedToReconcile
@@ -62,7 +64,8 @@ class TestActionMapper:
             ),
         )
         ids = [c.id for c in outcome.choices]
-        assert ActionId.DISCARD_THEN_PULL in ids
+        assert ActionId.RETRY in ids
+        assert ActionId.CANCEL in ids
 
     # --------------------------------------------------------
     # Method: testPullNotPossibleToFastForward
@@ -73,7 +76,8 @@ class TestActionMapper:
             stderr="fatal: Not possible to fast-forward, aborting.",
         )
         ids = [c.id for c in outcome.choices]
-        assert ActionId.DISCARD_THEN_PULL in ids
+        assert ActionId.RETRY in ids
+        assert ActionId.CANCEL in ids
 
     # --------------------------------------------------------
     # Method: testNotARepo
@@ -145,15 +149,13 @@ class TestActionMapper:
         assert outcome.title == "Remote branch not found"
         assert "master" in outcome.message
         assert "main" in outcome.message
+        assert "send this branch to Git" in outcome.message
         assert "Git pull needs attention" not in outcome.title
         ids = [c.id for c in outcome.choices]
-        assert ActionId.PULL_CURRENT_BRANCH in ids
         assert ActionId.FIRST_PUSH in ids
         assert ActionId.OPEN_SETTINGS in ids
         assert ActionId.CANCEL in ids
         assert ActionId.RETRY not in ids
-        pull_choice = next(c for c in outcome.choices if c.id == ActionId.PULL_CURRENT_BRANCH)
-        assert pull_choice.label == "Pull master"
 
     # --------------------------------------------------------
     # Method: testMissingRemoteRefParsesNameFromStderr
@@ -165,7 +167,8 @@ class TestActionMapper:
             local_branch="master",
         )
         assert "main" in outcome.message
-        assert ActionId.PULL_CURRENT_BRANCH in [c.id for c in outcome.choices]
+        assert "send this branch to Git" in outcome.message
+        assert ActionId.FIRST_PUSH in [c.id for c in outcome.choices]
 
     # --------------------------------------------------------
     # Method: testSuccessHelper

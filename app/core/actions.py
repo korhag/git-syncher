@@ -15,11 +15,8 @@ class ActionId(str, Enum):
     REENTER_PAT = "reenter_pat"
     OPEN_SETTINGS = "open_settings"
     VIEW_DIFFS = "view_diffs"
-    DISCARD_THEN_PULL = "discard_then_pull"
     MATCH_REMOTE = "match_remote"
-    STASH_THEN_PULL = "stash_then_pull"
     PULL_FIRST = "pull_first"
-    PULL_CURRENT_BRANCH = "pull_current_branch"
     OVERWRITE_REMOTE = "overwrite_remote"
     MERGE_BRING_REMOTE = "merge_bring_remote"
     MERGE_SEND_TO_REMOTE = "merge_send_to_remote"
@@ -114,32 +111,6 @@ class ActionMapper:
                 requested_branch=requested_branch or cls._parseMissingRemoteRef(stderr or stdout),
             )
 
-        if operation in ("pull", "fetch") and cls._isDivergedOrBehind(combined):
-            return ActionOutcome(
-                title="Local and remote differ",
-                message="Your branch has local changes or has diverged from the remote. Choose how to continue.",
-                choices=[
-                    ActionChoice(ActionId.VIEW_DIFFS, "View diffs"),
-                    ActionChoice(
-                        ActionId.STASH_THEN_PULL,
-                        "Stash then pull",
-                        description="Temporarily save local changes, pull, then you can re-apply.",
-                    ),
-                    ActionChoice(
-                        ActionId.DISCARD_THEN_PULL,
-                        "Discard local then pull",
-                        description=(
-                            "Throw away local commits and unsaved files, "
-                            "then this folder matches Git. Git online is not changed."
-                        ),
-                        destructive=True,
-                        requires_confirm=True,
-                    ),
-                    ActionChoice(ActionId.CANCEL, "Cancel"),
-                ],
-                details=details,
-            )
-
         if operation == "push" and cls._isNoCommitsToPush(combined):
             return ActionOutcome(
                 title="Nothing to push yet",
@@ -157,13 +128,15 @@ class ActionMapper:
         if operation == "push" and cls._isNonFastForward(combined):
             return ActionOutcome(
                 title="Push rejected",
-                message="Remote has commits you do not have. Pull first, or overwrite the remote (destructive).",
+                message=(
+                    "Git has commits you do not have. "
+                    "Overwrite Git with this computer?"
+                ),
                 choices=[
-                    ActionChoice(ActionId.PULL_FIRST, "Pull first"),
                     ActionChoice(
                         ActionId.OVERWRITE_REMOTE,
-                        "Overwrite remote",
-                        description="Force-push your local branch. This can erase remote commits.",
+                        "Overwrite Git",
+                        description="Replace Git online with this computer.",
                         destructive=True,
                         requires_confirm=True,
                     ),
@@ -274,38 +247,29 @@ class ActionMapper:
         local_branch: str = "",
         requested_branch: str = "",
     ) -> ActionOutcome:
-        on_computer = local_branch or "this branch"
         missing = requested_branch or "that name"
         if local_branch and requested_branch and local_branch != requested_branch:
             message = (
                 f"This computer is on {local_branch}. "
                 f"Git does not have a branch named {requested_branch}. "
-                f"Next: get updates for {local_branch} (the branch you are on)."
+                "Next: send this branch to Git, or open settings to fix the branch name."
             )
-            pull_label = f"Pull {local_branch}"
         elif local_branch:
             message = (
                 f"This computer is on {local_branch}. "
                 f"Git does not have a branch named {missing} yet. "
-                f"Next: pull {local_branch}, or send this branch to Git."
+                "Next: send this branch to Git."
             )
-            pull_label = f"Pull {local_branch}"
         else:
             message = (
                 f"Git does not have a branch named {missing}. "
                 "Next: open settings to fix the branch name, or send this branch to Git."
             )
-            pull_label = "Pull current branch"
 
         return ActionOutcome(
             title="Remote branch not found",
             message=message,
             choices=[
-                ActionChoice(
-                    ActionId.PULL_CURRENT_BRANCH,
-                    pull_label,
-                    description=f"Get updates for {on_computer} from Git.",
-                ),
                 ActionChoice(
                     ActionId.FIRST_PUSH,
                     "Send this branch to Git",
@@ -353,19 +317,6 @@ class ActionMapper:
             "connection refused",
             "ssl",
             "unable to access",
-        )
-        return any(marker in text for marker in markers)
-
-    @staticmethod
-    def _isDivergedOrBehind(text: str) -> bool:
-        markers = (
-            "your local changes",
-            "would be overwritten",
-            "need to specify how to reconcile",
-            "divergent branches",
-            "must be resolved",
-            "cannot pull with rebase",
-            "not possible to fast-forward",
         )
         return any(marker in text for marker in markers)
 

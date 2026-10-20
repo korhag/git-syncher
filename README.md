@@ -59,16 +59,16 @@ The restart icon on the dashboard (**Update from Git and restart**) downloads th
 
 ## First launch
 
-1. Create a **master password** — it encrypts your PATs and project settings on this machene (`data/vault.enc`).
+1. Create a **master password** — it encrypts that vault's PATs and project settings on this machine. You can keep more than one vault (each with its own password and projects) and create another from the opening screen. The app reopens the vault you used last.
 2. Click **Add project**, pick a folder, and fill remote URL / username / email / PAT.
 3. Use **Refresh** on the dashboard to check every project against Git.
 4. Open a project for commit, pull, push, per-file compare, or discard.
 
-Destructive actions (discard local changes, overwrite remote) always ask for an extra confirmation.
+Pull makes this folder identical to Git, even if the local branch name is wrong (for example local `main` when Git only has `master`). It asks for confirmation only when local commits or files would be deleted. Push sends this computer to Git, and asks for confirmation only when that would overwrite commits already on Git. Discarding a file and other destructive actions still ask as well.
 
 ## Security notes
 
-- The vault file is gitignored. Never commit `data/vault.enc`.
+- Vault files are gitignored. Never commit `data/vault.enc`, `data/vaults/`, or `data/vaults.json`.
 - PATs are injected at HTTPS time via a temporary askpass helper — they are not written into `.git/config`.
 - `user.name` / `user.email` are set with `git config --local` only for that repo.
 
