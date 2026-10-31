@@ -328,7 +328,7 @@ class ProjectDetailView:
     # --------------------------------------------------------
     # Method: _appendBranchSection
     # Purpose: Git branches as cards, with Test, Get update,
-    #          and Make winner actions.
+    #          Make winner, and Discard actions.
     # --------------------------------------------------------
     def _appendBranchSection(self) -> None:
         status = self.status
@@ -386,6 +386,15 @@ class ProjectDetailView:
                     "Make winner",
                     icon=ft.Icons.EMOJI_EVENTS,
                     on_click=lambda _e, name=info.name: self._makeWinner(name),
+                )
+            )
+        if not info.is_default and not info.is_current:
+            buttons.append(
+                ft.TextButton(
+                    "Discard branch",
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    style=ft.ButtonStyle(color=ft.Colors.RED_400),
+                    on_click=lambda _e, branch=info: self._discardBranch(branch),
                 )
             )
 
@@ -1436,15 +1445,21 @@ class ProjectDetailView:
         self.busy.runOrSnack(f"Matching {name}…", work, on_done=done)
 
     # --------------------------------------------------------
+    # Method: _defaultBranchName
+    # Purpose: Name of Git's default branch, or main when unknown.
+    # --------------------------------------------------------
+    def _defaultBranchName(self) -> str:
+        for info in self.branches:
+            if info.is_default:
+                return info.name
+        return "main"
+
+    # --------------------------------------------------------
     # Method: _makeWinner
     # Purpose: Ask, then merge this branch into Git's default.
     # --------------------------------------------------------
     def _makeWinner(self, name: str) -> None:
-        target = "main"
-        for info in self.branches:
-            if info.is_default:
-                target = info.name
-                break
+        target = self._defaultBranchName()
         Dialogs.showMergeWinner(
             self.page,
             winner=name,
@@ -1487,6 +1502,62 @@ class ProjectDetailView:
             self.reloadAsync(silent=True)
 
         self.busy.runOrSnack("Merging…", work, on_done=done)
+
+    # --------------------------------------------------------
+    # Method: _discardBranch
+    # Purpose: Confirm, then delete this branch on Git and here.
+    #          The default branch and the branch this computer is
+    #          on have no button, so they never reach this method.
+    # --------------------------------------------------------
+    def _discardBranch(self, info: BranchInfo) -> None:
+        target = self._defaultBranchName()
+        if info.ahead_of_default > 0:
+            noun = "change" if info.ahead_of_default == 1 else "changes"
+            extra = (
+                f" Its {info.ahead_of_default} {noun} not in {target} will be gone."
+            )
+        else:
+            extra = f" It is already in {target}."
+        Dialogs.showConfirm(
+            self.page,
+            title=f"Discard {info.name}?",
+            message=f"Delete {info.name} on Git and on this computer.{extra}",
+            confirm_label="Discard branch",
+            on_confirm=lambda name=info.name: self._runDiscardBranch(name),
+        )
+
+    # --------------------------------------------------------
+    # Method: _runDiscardBranch
+    # Purpose: Delete the branch on Git and on this computer.
+    # --------------------------------------------------------
+    def _runDiscardBranch(self, name: str) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def work() -> ActionOutcome:
+            return self.git.discardBranch(project, name)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(
+                outcome,
+                retry=lambda: self._runDiscardBranch(name),
+            )
+            if outcome.success:
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+            self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Discarding…", work, on_done=done)
 
     # --------------------------------------------------------
     # Per-file helpers

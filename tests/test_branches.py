@@ -515,6 +515,86 @@ class TestCommitToNewBranch:
 
             assert service.validateNewBranchName(clone, "try/new-lighting") == ""
 
+
+# ------------------------------------------------------------
+# Tests: discard a branch on Git and on this computer
+# ------------------------------------------------------------
+class TestDiscardBranch:
+    # --------------------------------------------------------
+    # Method: testDeletesOnGitAndThisComputer
+    # Purpose: The branch is gone on the remote and in the clone.
+    #          Git's default branch is left as it was. A saved
+    #          comparison against the discarded branch moves back
+    #          to the default.
+    # --------------------------------------------------------
+    def testDeletesOnGitAndThisComputer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = _diverged(Path(tmp))
+            _git(clone, "checkout", "feature")
+            _git(clone, "checkout", "main")
+            before_main = _rev(bare, "refs/heads/main")
+            service = GitService()
+            project = _project(clone, bare)
+            project.default_branch = "feature"
+
+            outcome = service.discardBranch(project, "feature")
+            assert outcome.success is True, outcome.message or outcome.title
+            assert "deleted" in outcome.message
+            assert _rev(bare, "refs/heads/feature") == ""
+            assert _rev(clone, "refs/heads/feature") == ""
+            assert _rev(bare, "refs/heads/main") == before_main
+            assert service.detectBranch(clone) == "main"
+            assert project.default_branch == "main"
+
+    # --------------------------------------------------------
+    # Method: testRemoteOnlyBranch
+    # Purpose: A branch that was never checked out here is still
+    #          removed from Git.
+    # --------------------------------------------------------
+    def testRemoteOnlyBranch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = _diverged(Path(tmp))
+            assert _rev(clone, "refs/heads/feature") == ""
+            service = GitService()
+
+            outcome = service.discardBranch(_project(clone, bare), "feature")
+            assert outcome.success is True, outcome.message or outcome.title
+            assert _rev(bare, "refs/heads/feature") == ""
+            assert _rev(bare, "refs/heads/main")
+            assert service.detectBranch(clone) == "main"
+
+    # --------------------------------------------------------
+    # Method: testRefusesDefaultBranch
+    # --------------------------------------------------------
+    def testRefusesDefaultBranch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = _diverged(Path(tmp))
+            before = _rev(bare, "refs/heads/main")
+            service = GitService()
+
+            outcome = service.discardBranch(_project(clone, bare), "main")
+            assert outcome.success is False
+            assert outcome.title == "Cannot discard the default"
+            assert _rev(bare, "refs/heads/main") == before
+            assert _rev(clone, "refs/heads/main") == before
+
+    # --------------------------------------------------------
+    # Method: testRefusesBranchThisComputerIsOn
+    # --------------------------------------------------------
+    def testRefusesBranchThisComputerIsOn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, clone = _diverged(Path(tmp))
+            _git(clone, "checkout", "feature")
+            before = _rev(bare, "refs/heads/feature")
+            service = GitService()
+
+            outcome = service.discardBranch(_project(clone, bare), "feature")
+            assert outcome.success is False
+            assert outcome.title == "Switch branches first"
+            assert _rev(bare, "refs/heads/feature") == before
+            assert _rev(clone, "refs/heads/feature") == before
+            assert service.detectBranch(clone) == "feature"
+
     # --------------------------------------------------------
     # Method: testNothingToCommitDeletesTheNewBranch
     # --------------------------------------------------------

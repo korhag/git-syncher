@@ -1510,8 +1510,85 @@ class GitService:
 
         message = f"{name} is now part of {default}."
         if delete_after:
-            message += self._deleteMergedBranch(project, root, name)
+            problems = self._deleteBranchEverywhere(project, root, name)
+            if not problems:
+                message += f" {name} was deleted."
+            else:
+                where = " and ".join(problems)
+                message += f" {name} could not be deleted on {where}."
         return ActionMapper.success(f"Merged into {default}", message)
+
+    # --------------------------------------------------------
+    # Method: discardBranch
+    # Purpose: Delete a branch on Git and on this computer.
+    #          Refuses Git's default branch and the branch this
+    #          computer is on, so the folder is never switched
+    #          out from under the user.
+    # Input: name (str) — branch to delete
+    # Output: ActionOutcome
+    # --------------------------------------------------------
+    def discardBranch(self, project: ProjectConfig, name: str) -> ActionOutcome:
+        root = Path(project.path)
+        branch = (name or "").strip()
+        if not branch:
+            return ActionOutcome(
+                title="No branch",
+                message="Choose a branch to discard.",
+            )
+
+        default = self.detectRemoteDefaultBranch(root)
+        if default and branch == default:
+            return ActionOutcome(
+                title="Cannot discard the default",
+                message=f"{branch} is Git's default branch, so it stays.",
+            )
+
+        current = self.detectBranch(root)
+        if current and branch == current:
+            return ActionOutcome(
+                title="Switch branches first",
+                message=(
+                    f"This computer is on {branch}. "
+                    "Switch to another branch, then discard it."
+                ),
+            )
+
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not fetch.ok:
+            return ActionMapper.mapError(
+                "fetch",
+                fetch.stderr,
+                fetch.stdout,
+                fetch.returncode,
+            )
+
+        # origin/HEAD can move during fetch. Do not delete the default.
+        default = self.detectRemoteDefaultBranch(root)
+        if default and branch == default:
+            return ActionOutcome(
+                title="Cannot discard the default",
+                message=f"{branch} is Git's default branch, so it stays.",
+            )
+
+        problems = self._deleteBranchEverywhere(project, root, branch)
+        if problems:
+            where = " and ".join(problems)
+            return ActionOutcome(
+                title="Could not discard",
+                message=f"{branch} could not be deleted on {where}.",
+            )
+
+        if project.default_branch == branch and default:
+            project.default_branch = default
+        return ActionMapper.success(
+            "Branch discarded",
+            f"{branch} was deleted on Git and on this computer.",
+        )
 
     # --------------------------------------------------------
     # Method: _mergeIntoAndPush
@@ -1701,18 +1778,18 @@ class GitService:
         return self._revListCount(root, f"{base_ref}..refs/heads/{branch}")
 
     # --------------------------------------------------------
-    # Method: _deleteMergedBranch
-    # Purpose: Remove a branch on Git and on this computer after it
-    #          has been merged. A failed delete is a note, not a failure,
-    #          because the merge already landed.
-    # Output: str — sentence to append to the success message
+    # Method: _deleteBranchEverywhere
+    # Purpose: Remove a branch on Git and on this computer.
+    #          A branch that is already gone counts as deleted.
+    # Output: list[str] — where the delete failed ("Git",
+    #          "this computer"), empty when both are gone
     # --------------------------------------------------------
-    def _deleteMergedBranch(
+    def _deleteBranchEverywhere(
         self,
         project: ProjectConfig,
         root: Path,
         branch: str,
-    ) -> str:
+    ) -> list[str]:
         remote = self._runWithAuth(
             ["push", "origin", "--delete", branch],
             cwd=root,
@@ -1720,17 +1797,16 @@ class GitService:
             timeout=120,
         )
         local = self._run(["branch", "-D", branch], cwd=root)
+        remote_text = f"{remote.stderr}\n{remote.stdout}".lower()
         local_text = f"{local.stderr}\n{local.stdout}".lower()
+        remote_missing = "remote ref does not exist" in remote_text
         local_missing = "not found" in local_text
         problems: list[str] = []
-        if not remote.ok:
+        if not remote.ok and not remote_missing:
             problems.append("Git")
         if not local.ok and not local_missing:
             problems.append("this computer")
-        if not problems:
-            return f" {branch} was deleted."
-        where = " and ".join(problems)
-        return f" {branch} could not be deleted on {where}."
+        return problems
 
     # --------------------------------------------------------
     # Method: createTag
