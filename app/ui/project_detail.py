@@ -6,7 +6,7 @@ import flet as ft
 
 from app.core.actions import ActionChoice, ActionId, ActionOutcome
 from app.core.changelog import ChangelogParser
-from app.core.git_service import GitService, PullPreview
+from app.core.git_service import BranchInfo, GitService, PullPreview
 from app.core.os_open import openFolderInExplorer, openRemoteInBrowser
 from app.core.store import VaultStore
 from app.models.project import (
@@ -24,8 +24,8 @@ from app.ui.dialogs import Dialogs
 
 # ------------------------------------------------------------
 # Class: ProjectDetailView
-# Purpose: Per-project actions — commit, pull, push, file diffs,
-#          discard, and guided recovery when Git fails.
+# Purpose: Per-project actions — commit, pull, push, branches,
+#          file diffs, discard, and guided recovery when Git fails.
 # ------------------------------------------------------------
 class ProjectDetailView:
     # --------------------------------------------------------
@@ -50,6 +50,7 @@ class ProjectDetailView:
         self.on_back = on_back
         self.dashboard = dashboard
         self.status: Optional[ProjectStatus] = None
+        self.branches: list[BranchInfo] = []
         self._merge_explain: dict[str, str] = {}
         self.body = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=12)
         self.header_status = ft.Column(spacing=2, tight=True)
@@ -168,6 +169,7 @@ class ProjectDetailView:
             self.on_back()
             return
         self.status = self.git.getStatus(project, fetch=True)
+        self.branches = self.git.listBranches(project)
         self.dashboard.statuses[project.id] = self.status
         self._renderBody()
         if not silent:
@@ -185,11 +187,13 @@ class ProjectDetailView:
             self.on_back()
             return
 
-        def work() -> ProjectStatus:
-            return self.git.getStatus(project, fetch=True)
+        def work() -> tuple[ProjectStatus, list[BranchInfo]]:
+            status = self.git.getStatus(project, fetch=True)
+            branches = self.git.listBranches(project)
+            return status, branches
 
         def done(
-            status: Optional[ProjectStatus],
+            result: Optional[tuple[ProjectStatus, list[BranchInfo]]],
             error: Optional[BaseException],
         ) -> None:
             if error is not None:
@@ -198,8 +202,10 @@ class ProjectDetailView:
             if self.project is None:
                 self.on_back()
                 return
-            assert status is not None
+            assert result is not None
+            status, branches = result
             self.status = status
+            self.branches = branches
             self.dashboard.statuses[project.id] = status
             self._renderBody()
             if not silent:
@@ -257,6 +263,8 @@ class ProjectDetailView:
                 tight=True,
             )
         )
+
+        self._appendBranchSection()
 
         copy_all_paths = status.pathsToCopy()
         heading_row: list[ft.Control] = [
@@ -316,6 +324,135 @@ class ProjectDetailView:
                     on_click=lambda _e: self._discardAll(),
                 )
             )
+
+    # --------------------------------------------------------
+    # Method: _appendBranchSection
+    # Purpose: Git branches as cards, with Test, Get update,
+    #          and Make winner actions.
+    # --------------------------------------------------------
+    def _appendBranchSection(self) -> None:
+        status = self.status
+        if status is None or not status.is_repo or not status.path_exists:
+            return
+
+        self.body.controls.append(
+            ft.Text("Branches", size=16, weight=ft.FontWeight.W_600)
+        )
+        if not self.branches:
+            self.body.controls.append(
+                ft.Text(
+                    "No branches on Git yet.",
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                )
+            )
+            return
+
+        default_name = ""
+        for info in self.branches:
+            if info.is_default:
+                default_name = info.name
+                break
+        cards = [self._branchCard(info, default_name) for info in self.branches]
+        self.body.controls.append(
+            ft.Row(cards, wrap=True, spacing=12, run_spacing=12)
+        )
+
+    # --------------------------------------------------------
+    # Method: _branchCard
+    # Purpose: One branch — name, plain status, and its actions.
+    #          The branch on this computer gets a colored border.
+    # --------------------------------------------------------
+    def _branchCard(self, info: BranchInfo, default_name: str) -> ft.Control:
+        buttons: list[ft.Control] = []
+        if info.is_current and info.git_newer > 0:
+            buttons.append(
+                ft.TextButton(
+                    "Get update",
+                    icon=ft.Icons.DOWNLOAD,
+                    on_click=lambda _e, name=info.name: self._testBranch(name),
+                )
+            )
+        if info.on_git and not info.is_current:
+            buttons.append(
+                ft.TextButton(
+                    "Test on this computer",
+                    icon=ft.Icons.COMPUTER,
+                    on_click=lambda _e, name=info.name: self._testBranch(name),
+                )
+            )
+        if info.on_git and not info.is_default and info.ahead_of_default > 0:
+            buttons.append(
+                ft.TextButton(
+                    "Make winner",
+                    icon=ft.Icons.EMOJI_EVENTS,
+                    on_click=lambda _e, name=info.name: self._makeWinner(name),
+                )
+            )
+
+        column_controls: list[ft.Control] = [
+            ft.Text(info.name, size=14, weight=ft.FontWeight.W_600),
+        ]
+        for line in self._branchDetailLines(info, default_name):
+            color = ft.Colors.ON_SURFACE_VARIANT
+            if line.startswith("Git has "):
+                color = ft.Colors.ORANGE_400
+            column_controls.append(ft.Text(line, size=12, color=color))
+        if buttons:
+            column_controls.append(
+                ft.Row(buttons, wrap=True, spacing=0, run_spacing=0)
+            )
+
+        border = None
+        if info.is_current:
+            border = ft.Border.all(2, ft.Colors.PRIMARY)
+        return ft.Container(
+            width=300,
+            padding=12,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            border_radius=8,
+            border=border,
+            content=ft.Column(column_controls, spacing=2, tight=True),
+        )
+
+    # --------------------------------------------------------
+    # Method: _branchDetailLines
+    # Purpose: Short lines under a branch name. No Git jargon.
+    # --------------------------------------------------------
+    @staticmethod
+    def _branchDetailLines(info: BranchInfo, default_name: str) -> list[str]:
+        target = default_name or "main"
+        status_bits: list[str] = []
+        if info.is_default:
+            status_bits.append("Git default")
+        if info.is_current:
+            status_bits.append("on this computer now")
+
+        detail_bits: list[str] = []
+        if info.updated:
+            detail_bits.append(info.updated)
+        if not info.is_default:
+            if info.on_git and info.ahead_of_default == 0:
+                detail_bits.append(f"already in {target}")
+            elif info.ahead_of_default > 0:
+                noun = "change" if info.ahead_of_default == 1 else "changes"
+                detail_bits.append(
+                    f"{info.ahead_of_default} {noun} not in {target}"
+                )
+            if not info.on_git:
+                detail_bits.append("only on this computer")
+
+        lines: list[str] = []
+        if status_bits:
+            lines.append(" · ".join(status_bits))
+        if detail_bits:
+            lines.append(" · ".join(detail_bits))
+        if info.git_newer > 0:
+            noun = "change" if info.git_newer == 1 else "changes"
+            lines.append(f"Git has {info.git_newer} newer {noun}")
+        if info.local_unsent > 0:
+            noun = "change" if info.local_unsent == 1 else "changes"
+            lines.append(f"{info.local_unsent} {noun} not sent to Git yet")
+        return lines
 
     # --------------------------------------------------------
     # Method: _appendVsGitGroups
@@ -745,14 +882,30 @@ class ProjectDetailView:
         if not last_tag:
             last_tag = self.git.latestTag(project.path)
         suggested = ChangelogParser.suggestCommitMessage(project.path, last_tag=last_tag) or ""
-        Dialogs.showCommit(self.page, suggested, on_commit=self._commitWithMessage)
+        Dialogs.showCommit(
+            self.page,
+            suggested,
+            on_commit=self._commitWithMessage,
+            validate_branch=lambda name: self.git.validateNewBranchName(
+                project.path,
+                name,
+            ),
+        )
 
-    def _commitWithMessage(self, message: str) -> None:
+    # --------------------------------------------------------
+    # Method: _commitWithMessage
+    # Purpose: Commit on the current branch, or — when new_branch
+    #          is set — commit there and send that branch to Git.
+    # --------------------------------------------------------
+    def _commitWithMessage(self, message: str, new_branch: str = "") -> None:
         project = self.project
         if not project:
             return
+        branch = (new_branch or "").strip()
 
         def work() -> ActionOutcome:
+            if branch:
+                return self.git.commitToNewBranch(project, message, branch)
             return self.git.commit(project, message)
 
         def done(
@@ -763,11 +916,20 @@ class ProjectDetailView:
                 Dialogs.showSnack(self.page, str(error), error=True)
                 return
             assert outcome is not None
-            self._handleOutcome(outcome, retry=lambda: self._commitWithMessage(message))
+            self._handleOutcome(
+                outcome,
+                retry=lambda: self._commitWithMessage(message, branch),
+            )
             if outcome.success:
+                if branch:
+                    try:
+                        self.store.save()
+                    except Exception:
+                        pass
                 self.reloadAsync(silent=True)
 
-        self.busy.runOrSnack("Committing…", work, on_done=done)
+        label = f"Committing to {branch}…" if branch else "Committing…"
+        self.busy.runOrSnack(label, work, on_done=done)
 
     # --------------------------------------------------------
     # Method: doPull
@@ -989,6 +1151,15 @@ class ProjectDetailView:
             Dialogs.showSnack(self.page, outcome.title + (f" — {outcome.message}" if outcome.message else ""))
             return
 
+        # A notice with no buttons cannot be dismissed.
+        if not outcome.choices:
+            outcome = ActionOutcome(
+                title=outcome.title,
+                message=outcome.message,
+                details=outcome.details,
+                choices=[ActionChoice(ActionId.CANCEL, "OK")],
+            )
+
         def on_choice(action_id: ActionId) -> None:
             self._dispatchAction(action_id, retry=retry)
 
@@ -1193,6 +1364,129 @@ class ProjectDetailView:
             self.reloadAsync(silent=True)
 
         self.busy.runOrSnack("Merging and pushing…", work, on_done=done)
+
+    # --------------------------------------------------------
+    # Method: _testBranch
+    # Purpose: Preview making this folder match one Git branch.
+    #          Confirm only when local commits or files would be lost.
+    # --------------------------------------------------------
+    def _testBranch(self, name: str) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def work() -> PullPreview:
+            return self.git.previewPull(project, branch=name)
+
+        def done(
+            preview: Optional[PullPreview],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert preview is not None
+            if preview.outcome is not None and not preview.outcome.success:
+                self._handleOutcome(preview.outcome, retry=lambda: self._testBranch(name))
+                return
+            if preview.would_lose_local:
+                Dialogs.showConfirm(
+                    self.page,
+                    title=f"Match Git's {name}?",
+                    message=(
+                        f"This computer will match Git's {name}. "
+                        "Local commits and files will be deleted."
+                    ),
+                    confirm_label="Match this branch",
+                    on_confirm=lambda: self._runTestBranch(name),
+                )
+                return
+            self._runTestBranch(name)
+
+        self.busy.runOrSnack("Checking Git…", work, on_done=done)
+
+    # --------------------------------------------------------
+    # Method: _runTestBranch
+    # Purpose: Reset this folder to origin/<name>.
+    # --------------------------------------------------------
+    def _runTestBranch(self, name: str) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def work() -> ActionOutcome:
+            return self.git.resetToRemote(project, branch=name)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(outcome, retry=lambda: self._testBranch(name))
+            if outcome.success:
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+                self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack(f"Matching {name}…", work, on_done=done)
+
+    # --------------------------------------------------------
+    # Method: _makeWinner
+    # Purpose: Ask, then merge this branch into Git's default.
+    # --------------------------------------------------------
+    def _makeWinner(self, name: str) -> None:
+        target = "main"
+        for info in self.branches:
+            if info.is_default:
+                target = info.name
+                break
+        Dialogs.showMergeWinner(
+            self.page,
+            winner=name,
+            target=target,
+            on_confirm=lambda delete_after, branch=name: self._runMakeWinner(
+                branch,
+                delete_after,
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Method: _runMakeWinner
+    # Purpose: Merge origin/<name> into the default branch and push.
+    # --------------------------------------------------------
+    def _runMakeWinner(self, name: str, delete_after: bool) -> None:
+        project = self.project
+        if not project:
+            return
+
+        def work() -> ActionOutcome:
+            return self.git.mergeWinner(project, name, delete_after)
+
+        def done(
+            outcome: Optional[ActionOutcome],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                Dialogs.showSnack(self.page, str(error), error=True)
+                return
+            assert outcome is not None
+            self._handleOutcome(
+                outcome,
+                retry=lambda: self._runMakeWinner(name, delete_after),
+            )
+            if outcome.success:
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
+            self.reloadAsync(silent=True)
+
+        self.busy.runOrSnack("Merging…", work, on_done=done)
 
     # --------------------------------------------------------
     # Per-file helpers

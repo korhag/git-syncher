@@ -66,6 +66,8 @@ The restart icon on the dashboard (**Update from Git and restart**) downloads th
 
 Pull makes this folder identical to Git, even if the local branch name is wrong (for example local `main` when Git only has `master`). It asks for confirmation only when local commits or files would be deleted. Push sends this computer to Git, and asks for confirmation only when that would overwrite commits already on Git. Discarding a file and other destructive actions still ask as well.
 
+Open a project to see its branches as cards. The card for the branch this computer is on is highlighted. If Git has newer changes on that branch, the card says so and **Get update** makes this folder match it, asking only when local commits or files would be deleted. **Test on this computer** does the same for a branch you are not on. **Make winner** merges that branch into Git's default branch, keeps the winner's version where both changed the same lines, and updates Git. A checkbox (on by default) deletes the branch after it wins. In **Commit**, "Put this on a new branch" commits the change there and sends that branch to Git, for when you are not sure it belongs on the current branch yet.
+
 ## Security notes
 
 - Vault files are gitignored. Never commit `data/vault.enc`, `data/vaults/`, or `data/vaults.json`.

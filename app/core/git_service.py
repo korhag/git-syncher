@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,28 @@ class PullPreview:
     outcome: Optional[ActionOutcome] = None
     remote_ref: str = ""
     would_lose_local: bool = False
+
+
+# ------------------------------------------------------------
+# Class: BranchInfo
+# Purpose: One card in the project Branches list.
+#          on_git is false only for the branch checked out on
+#          this computer when Git does not have that name yet.
+#          ahead_of_default is commits on this branch that main
+#          (Git's default) does not have.
+#          git_newer / local_unsent are filled only for the branch
+#          checked out on this computer, and only when Git has it.
+# ------------------------------------------------------------
+@dataclass
+class BranchInfo:
+    name: str
+    on_git: bool = True
+    is_current: bool = False
+    is_default: bool = False
+    updated: str = ""
+    ahead_of_default: int = 0
+    git_newer: int = 0
+    local_unsent: int = 0
 
 
 # ------------------------------------------------------------
@@ -249,6 +272,153 @@ class GitService:
             if name and name not in names:
                 names.append(name)
         return names
+
+    # --------------------------------------------------------
+    # Method: relativeUpdated
+    # Purpose: "Updated 2 hours ago" style label from a unix time.
+    # Input: unix_ts (int); now (int) — override for tests
+    # Output: str — empty when the timestamp is missing
+    # --------------------------------------------------------
+    @staticmethod
+    def relativeUpdated(unix_ts: int, now: Optional[int] = None) -> str:
+        if unix_ts <= 0:
+            return ""
+        current = int(time.time()) if now is None else now
+        delta = max(0, current - unix_ts)
+        minutes = delta // 60
+        hours = delta // 3600
+        days = delta // 86400
+        if minutes < 1:
+            return "Updated just now"
+        if minutes < 60:
+            unit = "minute" if minutes == 1 else "minutes"
+            return f"Updated {minutes} {unit} ago"
+        if hours < 24:
+            unit = "hour" if hours == 1 else "hours"
+            return f"Updated {hours} {unit} ago"
+        if days < 2:
+            return "Updated yesterday"
+        if days < 14:
+            return f"Updated {days} days ago"
+        weeks = days // 7
+        if weeks < 8:
+            unit = "week" if weeks == 1 else "weeks"
+            return f"Updated {weeks} {unit} ago"
+        months = days // 30
+        if months < 12:
+            unit = "month" if months == 1 else "months"
+            return f"Updated {max(1, months)} {unit} ago"
+        years = max(1, days // 365)
+        unit = "year" if years == 1 else "years"
+        return f"Updated {years} {unit} ago"
+
+    # --------------------------------------------------------
+    # Method: listBranches
+    # Purpose: Branches to show on the project page. Git branches
+    #          plus the current branch when it exists only here.
+    #          Read-only; call after a fetch so origin/* is fresh.
+    # Output: list[BranchInfo] — default first, then this computer's
+    #         branch, then the rest newest first
+    # --------------------------------------------------------
+    def listBranches(self, project: ProjectConfig) -> list[BranchInfo]:
+        root = Path(project.path)
+        if not root.is_dir() or not self.isRepo(root):
+            return []
+
+        current = self.detectBranch(root)
+        default = self.detectRemoteDefaultBranch(root)
+        listed = self._run(
+            [
+                "for-each-ref",
+                "--format=%(refname)%09%(committerdate:unix)",
+                "refs/remotes/origin",
+                "refs/heads",
+            ],
+            cwd=root,
+        )
+        if not listed.ok:
+            return []
+
+        remote_ts: dict[str, int] = {}
+        local_ts: dict[str, int] = {}
+        for line in listed.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            refname = parts[0].strip()
+            try:
+                stamp = int(parts[1].strip() or "0")
+            except ValueError:
+                stamp = 0
+            if refname == "refs/remotes/origin/HEAD" or refname == "refs/remotes/origin":
+                continue
+            if refname.startswith("refs/remotes/origin/"):
+                name = refname[len("refs/remotes/origin/") :]
+                if name:
+                    remote_ts[name] = stamp
+            elif refname.startswith("refs/heads/"):
+                name = refname[len("refs/heads/") :]
+                if name:
+                    local_ts[name] = stamp
+
+        names = list(remote_ts.keys())
+        if current and current not in remote_ts and current in local_ts:
+            names.append(current)
+
+        infos: list[BranchInfo] = []
+        for name in names:
+            on_git = name in remote_ts
+            is_current = bool(current) and name == current
+            ahead = 0
+            if default and name != default:
+                if on_git:
+                    ahead = self._revListCount(root, f"origin/{default}..origin/{name}")
+                else:
+                    ahead = self._revListCount(root, f"origin/{default}..{name}")
+            git_newer = 0
+            local_unsent = 0
+            if is_current and on_git:
+                git_newer = self._revListCount(root, f"refs/heads/{name}..origin/{name}")
+                local_unsent = self._revListCount(root, f"origin/{name}..refs/heads/{name}")
+            stamp = remote_ts.get(name, local_ts.get(name, 0))
+            infos.append(
+                BranchInfo(
+                    name=name,
+                    on_git=on_git,
+                    is_current=is_current,
+                    is_default=bool(default) and name == default,
+                    updated=self.relativeUpdated(stamp),
+                    ahead_of_default=ahead,
+                    git_newer=git_newer,
+                    local_unsent=local_unsent,
+                )
+            )
+
+        def sort_key(info: BranchInfo) -> tuple[int, int, str]:
+            if info.is_default:
+                rank = 0
+            elif info.is_current:
+                rank = 1
+            else:
+                rank = 2
+            stamp = remote_ts.get(info.name, local_ts.get(info.name, 0))
+            return (rank, -stamp, info.name)
+
+        infos.sort(key=sort_key)
+        return infos
+
+    # --------------------------------------------------------
+    # Method: _revListCount
+    # Purpose: git rev-list --count for a range, or 0 when it fails.
+    # --------------------------------------------------------
+    def _revListCount(self, root: Path, revision_range: str) -> int:
+        result = self._run(["rev-list", "--count", revision_range], cwd=root)
+        if not result.ok:
+            return 0
+        try:
+            return int(result.stdout.strip() or "0")
+        except ValueError:
+            return 0
 
     # --------------------------------------------------------
     # Method: suggestBranchNames
@@ -774,6 +944,39 @@ class GitService:
         return ActionMapper.mapError("add", result.stderr, result.stdout, result.returncode)
 
     # --------------------------------------------------------
+    # Method: validateNewBranchName
+    # Purpose: Empty string when this name can be created here and on Git.
+    #          Otherwise a plain-language reason it cannot.
+    # Input: path — repo folder; name — the branch the user typed
+    # Output: str
+    # --------------------------------------------------------
+    def validateNewBranchName(self, path: str | Path, name: str) -> str:
+        cleaned = (name or "").strip()
+        if not cleaned:
+            return "Branch name cannot be empty."
+        root = Path(path)
+        cwd = root if root.is_dir() else None
+        check = self._run(["check-ref-format", "--branch", cleaned], cwd=cwd)
+        canonical = check.stdout.strip() if check.ok else ""
+        if canonical != cleaned:
+            return f"{cleaned} is not a valid branch name."
+        if not self.isRepo(root):
+            return ""
+        local = self._run(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{cleaned}"],
+            cwd=root,
+        )
+        if local.ok:
+            return f"{cleaned} already exists on this computer."
+        remote = self._run(
+            ["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{cleaned}"],
+            cwd=root,
+        )
+        if remote.ok:
+            return f"{cleaned} already exists on Git."
+        return ""
+
+    # --------------------------------------------------------
     # Method: commit
     # Purpose: Stage all and create a commit with the message.
     # --------------------------------------------------------
@@ -790,6 +993,60 @@ class GitService:
         if "nothing to commit" in (result.stdout + result.stderr).lower():
             return ActionMapper.success("Nothing to commit", "Working tree clean")
         return ActionMapper.mapError("commit", result.stderr, result.stdout, result.returncode)
+
+    # --------------------------------------------------------
+    # Method: commitToNewBranch
+    # Purpose: Put unsaved files on a new branch, commit them, and
+    #          send that branch to Git. If there is nothing to commit
+    #          (or the commit fails), switch back and delete the branch.
+    #          A failed push leaves the commit on the new branch.
+    # Input: project, message, branch — the new branch name
+    # Output: ActionOutcome
+    # --------------------------------------------------------
+    def commitToNewBranch(
+        self,
+        project: ProjectConfig,
+        message: str,
+        branch: str,
+    ) -> ActionOutcome:
+        root = Path(project.path)
+        name = (branch or "").strip()
+        problem = self.validateNewBranchName(root, name)
+        if problem:
+            return ActionOutcome(title="Branch name", message=problem)
+
+        was_on = self.detectBranch(root)
+        if not was_on:
+            return ActionOutcome(
+                title="Detached HEAD",
+                message="Check out a branch on this computer first, then try again.",
+            )
+
+        created = self._run(["checkout", "-b", name], cwd=root)
+        if not created.ok:
+            return ActionMapper.mapError(
+                "checkout",
+                created.stderr,
+                created.stdout,
+                created.returncode,
+                local_branch=was_on,
+                requested_branch=name,
+            )
+
+        outcome = self.commit(project, message)
+        if not outcome.success or outcome.title == "Nothing to commit":
+            self._run(["checkout", was_on], cwd=root)
+            self._run(["branch", "-D", name], cwd=root)
+            return outcome
+
+        project.default_branch = name
+        pushed = self.push(project, set_upstream=True)
+        if not pushed.success:
+            return pushed
+        return ActionMapper.success(
+            f"Committed to {name} and sent to Git",
+            message,
+        )
 
     # --------------------------------------------------------
     # Method: checkoutSavedBranch
@@ -913,10 +1170,11 @@ class GitService:
     # Method: previewPull
     # Purpose: Fetch and report whether Pull would delete local work,
     #          without changing the folder. The UI confirms only then.
-    # Input: project (ProjectConfig)
+    # Input: project (ProjectConfig); branch — when set, preview
+    #        matching that Git branch instead of the usual Pull target
     # Output: PullPreview
     # --------------------------------------------------------
-    def previewPull(self, project: ProjectConfig) -> PullPreview:
+    def previewPull(self, project: ProjectConfig, branch: str = "") -> PullPreview:
         root = Path(project.path)
         fetch = self._runWithAuth(
             ["fetch", "--prune", "origin"],
@@ -934,8 +1192,22 @@ class GitService:
                     local_branch=self.detectBranch(root),
                 )
             )
-        remote_ref = self._resolveOriginBranch(root, project, prefer_current=True)
+        remote_ref = self._resolveOriginBranch(
+            root,
+            project,
+            prefer_current=True,
+            branch=branch,
+        )
         if not remote_ref:
+            requested = (branch or "").strip()
+            if requested:
+                return PullPreview(
+                    outcome=ActionOutcome(
+                        title="Branch not on Git",
+                        message=f"Git does not have a branch named {requested}.",
+                        details=(fetch.stdout + "\n" + fetch.stderr).strip(),
+                    )
+                )
             return PullPreview(
                 outcome=self._noOriginBranchOutcome(
                     root,
@@ -1118,6 +1390,7 @@ class GitService:
     # --------------------------------------------------------
     # Method: mergeSendToRemote
     # Purpose: Merge current checkout into origin/<remote_branch>, then push.
+    #          Returns to the branch this computer was on when the merge works.
     # --------------------------------------------------------
     def mergeSendToRemote(
         self,
@@ -1126,10 +1399,49 @@ class GitService:
     ) -> ActionOutcome:
         root = Path(project.path)
         target = (remote_branch or "").strip()
+        was_on = self.detectBranch(root)
+        if not was_on:
+            return ActionOutcome(
+                title="Detached HEAD",
+                message="Check out a branch on this computer first, then try again.",
+            )
         if not target:
             return ActionOutcome(
                 title="No remote branch",
                 message="Could not tell which Git branch to merge into.",
+            )
+
+        outcome = self._mergeIntoAndPush(
+            project,
+            source_ref=was_on,
+            target=target,
+            prefer_source=False,
+        )
+        if outcome.success and was_on != target:
+            self._run(["checkout", was_on], cwd=root)
+        return outcome
+
+    # --------------------------------------------------------
+    # Method: mergeWinner
+    # Purpose: Merge origin/<winner> into Git's default branch.
+    #          Same-line conflicts keep the winner. Then push.
+    #          This computer stays on the default branch.
+    # Input: winner (str), delete_after (bool) — delete the branch
+    #        on Git and on this computer after a successful merge
+    # Output: ActionOutcome
+    # --------------------------------------------------------
+    def mergeWinner(
+        self,
+        project: ProjectConfig,
+        winner: str,
+        delete_after: bool = False,
+    ) -> ActionOutcome:
+        root = Path(project.path)
+        name = (winner or "").strip()
+        if not name:
+            return ActionOutcome(
+                title="No branch",
+                message="Choose a branch to merge.",
             )
         if self.listChanges(root):
             return ActionOutcome(
@@ -1139,12 +1451,105 @@ class GitService:
                 ),
             )
 
-        was_on = self.detectBranch(root)
-        if not was_on:
-            return ActionOutcome(
-                title="Detached HEAD",
-                message="Check out a branch on this computer first, then try again.",
+        fetch = self._runWithAuth(
+            ["fetch", "--prune", "origin"],
+            cwd=root,
+            project=project,
+            timeout=60,
+        )
+        if not fetch.ok:
+            return ActionMapper.mapError(
+                "fetch",
+                fetch.stderr,
+                fetch.stdout,
+                fetch.returncode,
             )
+
+        default = self.detectRemoteDefaultBranch(root)
+        if not default:
+            return ActionOutcome(
+                title="No default branch",
+                message="Git has no default branch to merge into.",
+            )
+        if name == default:
+            return ActionOutcome(
+                title="Already the default",
+                message=f"{name} is already Git's default branch.",
+            )
+
+        remote_winner = f"origin/{name}"
+        if not self._run(["rev-parse", "--verify", remote_winner], cwd=root).ok:
+            return ActionOutcome(
+                title="Branch not on Git",
+                message=f"Git does not have a branch named {name}.",
+            )
+
+        # Local commits that were never pushed would be left out of the merge.
+        unpushed = self._commitsNotOnRef(root, name, remote_winner)
+        if unpushed:
+            noun = "commit" if unpushed == 1 else "commits"
+            return ActionOutcome(
+                title="Push this branch first",
+                message=(
+                    f"This computer's {name} has {unpushed} {noun} that are not on Git yet. "
+                    "Push them first so the merge includes your latest work."
+                ),
+            )
+
+        outcome = self._mergeIntoAndPush(
+            project,
+            source_ref=remote_winner,
+            target=default,
+            prefer_source=True,
+        )
+        if not outcome.success:
+            return outcome
+
+        if project.default_branch != default:
+            project.default_branch = default
+
+        message = f"{name} is now part of {default}."
+        if delete_after:
+            message += self._deleteMergedBranch(project, root, name)
+        return ActionMapper.success(f"Merged into {default}", message)
+
+    # --------------------------------------------------------
+    # Method: _mergeIntoAndPush
+    # Purpose: Check out origin/<target>, merge source_ref into it, push.
+    #          prefer_source uses the incoming side for conflicts and
+    #          finishes any leftover conflicts without asking.
+    #          Refuses when this computer's target has unpushed commits,
+    #          because checkout would drop them.
+    # --------------------------------------------------------
+    def _mergeIntoAndPush(
+        self,
+        project: ProjectConfig,
+        source_ref: str,
+        target: str,
+        prefer_source: bool,
+    ) -> ActionOutcome:
+        root = Path(project.path)
+        target = (target or "").strip()
+        source_ref = (source_ref or "").strip()
+        if not target:
+            return ActionOutcome(
+                title="No remote branch",
+                message="Could not tell which Git branch to merge into.",
+            )
+        if not source_ref:
+            return ActionOutcome(
+                title="No branch",
+                message="Could not tell which branch to merge.",
+            )
+        if self.listChanges(root):
+            return ActionOutcome(
+                title="Unsaved files",
+                message=(
+                    "Commit or discard unsaved files on this computer before merging."
+                ),
+            )
+
+        self.applyLocalIdentity(root, project.username, project.email)
 
         fetch = self._runWithAuth(
             ["fetch", "--prune", "origin"],
@@ -1168,6 +1573,24 @@ class GitService:
                 message=f"Git does not have {remote_ref} to merge into.",
                 details=check.stderr,
             )
+        source_ok = self._run(["rev-parse", "--verify", source_ref], cwd=root)
+        if not source_ok.ok:
+            return ActionOutcome(
+                title="Branch not found",
+                message=f"Could not find {source_ref} to merge.",
+                details=source_ok.stderr,
+            )
+
+        unpushed = self._commitsNotOnRef(root, target, remote_ref)
+        if unpushed:
+            noun = "commit" if unpushed == 1 else "commits"
+            return ActionOutcome(
+                title="Unpushed commits",
+                message=(
+                    f"This computer's {target} has {unpushed} {noun} that are not on Git yet. "
+                    "Push them first, or they would be lost."
+                ),
+            )
 
         checkout = self._run(["checkout", "-B", target, remote_ref], cwd=root)
         if not checkout.ok:
@@ -1178,14 +1601,23 @@ class GitService:
                 checkout.returncode,
             )
 
-        merge = self._run(["merge", "--no-edit", was_on], cwd=root, timeout=120)
-        if not merge.ok:
+        merge_args = ["merge", "--no-edit"]
+        if prefer_source:
+            merge_args.extend(["-X", "theirs"])
+        merge_args.append(source_ref)
+        merge = self._run(merge_args, cwd=root, timeout=120)
+        merged = merge.ok
+        if not merged and prefer_source:
+            merged = self._resolveConflictsTakeTheirs(root)
+        if not merged:
+            if prefer_source:
+                self._run(["merge", "--abort"], cwd=root)
             return ActionMapper.mapError(
                 "merge",
                 merge.stderr,
                 merge.stdout,
                 merge.returncode,
-                local_branch=was_on,
+                local_branch=source_ref,
                 requested_branch=target,
             )
 
@@ -1203,13 +1635,102 @@ class GitService:
                 push.returncode,
             )
 
-        if was_on != target:
-            self._run(["checkout", was_on], cwd=root)
-
+        label = source_ref.removeprefix("origin/")
         return ActionMapper.success(
             "Merge and push complete",
-            f"Merged {was_on} into {target} and pushed",
+            f"Merged {label} into {target} and pushed",
         )
+
+    # --------------------------------------------------------
+    # Method: _resolveConflictsTakeTheirs
+    # Purpose: Finish a conflicted merge by keeping the branch that
+    #          was merged in (the winner). Deleted-by-winner files
+    #          are removed. Commits the merge when every path is resolved.
+    # Output: bool — True when the merge commit was created
+    # --------------------------------------------------------
+    def _resolveConflictsTakeTheirs(self, root: Path) -> bool:
+        paths = self._unmergedPaths(root)
+        if not paths:
+            return False
+        for file_path in paths:
+            taken = self._run(["checkout", "--theirs", "--", file_path], cwd=root)
+            if taken.ok:
+                added = self._run(["add", "--", file_path], cwd=root)
+                if not added.ok:
+                    return False
+                continue
+            removed = self._run(["rm", "-f", "--", file_path], cwd=root)
+            if not removed.ok:
+                return False
+        if self._unmergedPaths(root):
+            return False
+        commit = self._run(["commit", "--no-edit"], cwd=root)
+        return commit.ok
+
+    # --------------------------------------------------------
+    # Method: _unmergedPaths
+    # Purpose: Paths still conflicted in the index.
+    # --------------------------------------------------------
+    def _unmergedPaths(self, root: Path) -> list[str]:
+        result = self._run(["ls-files", "-u"], cwd=root)
+        if not result.ok and not result.stdout.strip():
+            return []
+        paths: list[str] = []
+        for line in result.stdout.splitlines():
+            if "\t" not in line:
+                continue
+            file_path = line.split("\t", 1)[1].strip()
+            if file_path and file_path not in paths:
+                paths.append(file_path)
+        return paths
+
+    # --------------------------------------------------------
+    # Method: _commitsNotOnRef
+    # Purpose: Commits on the local branch that base_ref does not have.
+    #          0 when the local branch does not exist.
+    # --------------------------------------------------------
+    def _commitsNotOnRef(self, root: Path, branch: str, base_ref: str) -> int:
+        local = self._run(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=root,
+        )
+        if not local.ok:
+            return 0
+        if not self._run(["rev-parse", "--verify", base_ref], cwd=root).ok:
+            return 0
+        return self._revListCount(root, f"{base_ref}..refs/heads/{branch}")
+
+    # --------------------------------------------------------
+    # Method: _deleteMergedBranch
+    # Purpose: Remove a branch on Git and on this computer after it
+    #          has been merged. A failed delete is a note, not a failure,
+    #          because the merge already landed.
+    # Output: str — sentence to append to the success message
+    # --------------------------------------------------------
+    def _deleteMergedBranch(
+        self,
+        project: ProjectConfig,
+        root: Path,
+        branch: str,
+    ) -> str:
+        remote = self._runWithAuth(
+            ["push", "origin", "--delete", branch],
+            cwd=root,
+            project=project,
+            timeout=120,
+        )
+        local = self._run(["branch", "-D", branch], cwd=root)
+        local_text = f"{local.stderr}\n{local.stdout}".lower()
+        local_missing = "not found" in local_text
+        problems: list[str] = []
+        if not remote.ok:
+            problems.append("Git")
+        if not local.ok and not local_missing:
+            problems.append("this computer")
+        if not problems:
+            return f" {branch} was deleted."
+        where = " and ".join(problems)
+        return f" {branch} could not be deleted on {where}."
 
     # --------------------------------------------------------
     # Method: createTag
@@ -1303,12 +1824,14 @@ class GitService:
     #          Fetch, hard-reset to origin/<branch>, then clean.
     # Input: project (ProjectConfig); prefer_current — try the branch
     #        this computer is on before the remote default (Pull).
+    #        branch — when set, match origin/<branch> only.
     # Output: ActionOutcome
     # --------------------------------------------------------
     def resetToRemote(
         self,
         project: ProjectConfig,
         prefer_current: bool = False,
+        branch: str = "",
     ) -> ActionOutcome:
         root = Path(project.path)
         fetch = self._runWithAuth(
@@ -1330,8 +1853,16 @@ class GitService:
             root,
             project,
             prefer_current=prefer_current,
+            branch=branch,
         )
         if not remote_ref:
+            requested = (branch or "").strip()
+            if requested:
+                return ActionOutcome(
+                    title="Branch not on Git",
+                    message=f"Git does not have a branch named {requested}.",
+                    details=(fetch.stdout + "\n" + fetch.stderr).strip(),
+                )
             return self._noOriginBranchOutcome(
                 root,
                 fetch.stdout + "\n" + fetch.stderr,
@@ -1514,7 +2045,9 @@ class GitService:
     # Purpose: Pick origin/<branch> for hard reset.
     #          Match-Git prefers the remote default. Pull prefers the
     #          branch this computer is already on, when Git has it.
+    #          A requested branch is the only candidate.
     # Input: prefer_current (bool) — current branch first when True
+    #        branch (str) — explicit origin/<branch> to match
     # Output: str — "origin/<name>", or "" when none exist
     # --------------------------------------------------------
     def _resolveOriginBranch(
@@ -1522,7 +2055,14 @@ class GitService:
         root: Path,
         project: ProjectConfig,
         prefer_current: bool = False,
+        branch: str = "",
     ) -> str:
+        requested = (branch or "").strip()
+        if requested:
+            ref = f"origin/{requested}"
+            check = self._run(["rev-parse", "--verify", ref], cwd=root)
+            return ref if check.ok else ""
+
         candidates: list[str] = []
         current = self.detectBranch(root)
         if prefer_current and current:

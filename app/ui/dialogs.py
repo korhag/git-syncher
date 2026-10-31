@@ -180,6 +180,63 @@ class Dialogs:
         page.show_dialog(dialog)
 
     # --------------------------------------------------------
+    # Method: showMergeWinner
+    # Purpose: Confirm merging a branch into Git's default.
+    #          on_confirm receives True when the branch should be deleted.
+    # --------------------------------------------------------
+    @staticmethod
+    def showMergeWinner(
+        page: ft.Page,
+        winner: str,
+        target: str,
+        on_confirm: Callable[[bool], None],
+        on_cancel: Optional[Callable[[], None]] = None,
+    ) -> None:
+        checkbox = ft.Checkbox(
+            label=f"Delete {winner} after merging",
+            value=True,
+        )
+
+        def handle_cancel(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            if on_cancel:
+                on_cancel()
+
+        def handle_confirm(_e: ft.ControlEvent) -> None:
+            delete_after = bool(checkbox.value)
+            page.pop_dialog()
+            on_confirm(delete_after)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            scrollable=True,
+            title=ft.Text(f"Make {winner} the winner?"),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        (
+                            f"Merge {winner} into {target}. "
+                            f"Where both changed the same lines, {winner} wins. "
+                            f"{target} on Git is updated and this computer switches to {target}."
+                        ),
+                        size=13,
+                        selectable=True,
+                    ),
+                    checkbox,
+                ],
+                tight=True,
+                spacing=12,
+                width=dialogWidth(page, preferred=420),
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=handle_cancel),
+                ft.FilledButton("Make winner", on_click=handle_confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialog)
+
+    # --------------------------------------------------------
     # Method: showWarningChoice
     # Purpose: Warning dialog with stay vs continue actions.
     # --------------------------------------------------------
@@ -227,12 +284,18 @@ class Dialogs:
     # --------------------------------------------------------
     # Method: showCommit
     # Purpose: Commit message dialog with optional prefill.
+    #          A checkbox puts the commit on a new branch and sends
+    #          it to Git. on_commit receives (message, new_branch);
+    #          new_branch is empty for a normal commit.
+    #          validate_branch returns an empty string when the name
+    #          is usable, otherwise the error to show.
     # --------------------------------------------------------
     @staticmethod
     def showCommit(
         page: ft.Page,
         suggested_message: str,
-        on_commit: Callable[[str], None],
+        on_commit: Callable[[str, str], None],
+        validate_branch: Optional[Callable[[str], str]] = None,
     ) -> None:
         field = ft.TextField(
             label="Commit message",
@@ -242,7 +305,28 @@ class Dialogs:
             max_lines=5,
             autofocus=True,
         )
+        branch_field = ft.TextField(
+            label="Branch name",
+            hint_text="try/new-lighting",
+            visible=False,
+        )
         error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+        commit_button = ft.FilledButton("Commit")
+
+        def toggle_branch(e: ft.ControlEvent) -> None:
+            checked = bool(e.control.value)
+            branch_field.visible = checked
+            commit_button.content = (
+                "Commit and send to Git" if checked else "Commit"
+            )
+            error_text.value = ""
+            page.update()
+
+        checkbox = ft.Checkbox(
+            label="Put this on a new branch (try it out first)",
+            value=False,
+            on_change=toggle_branch,
+        )
 
         def handle_commit(_e: ft.ControlEvent) -> None:
             message = (field.value or "").strip()
@@ -250,21 +334,37 @@ class Dialogs:
                 error_text.value = "Commit message cannot be empty."
                 page.update()
                 return
+            new_branch = ""
+            if checkbox.value:
+                new_branch = (branch_field.value or "").strip()
+                if not new_branch:
+                    error_text.value = "Branch name cannot be empty."
+                    page.update()
+                    return
+                if validate_branch is not None:
+                    problem = validate_branch(new_branch)
+                    if problem:
+                        error_text.value = problem
+                        page.update()
+                        return
             page.pop_dialog()
-            on_commit(message)
+            on_commit(message, new_branch)
+
+        commit_button.on_click = handle_commit
 
         dialog = ft.AlertDialog(
             modal=True,
             scrollable=True,
             title=ft.Text("Commit changes"),
             content=ft.Column(
-                [field, error_text],
+                [field, checkbox, branch_field, error_text],
                 tight=True,
+                spacing=12,
                 width=dialogWidth(page, preferred=420),
             ),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda _e: page.pop_dialog()),
-                ft.FilledButton("Commit", on_click=handle_commit),
+                commit_button,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )

@@ -5,6 +5,20 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] - 2026-10-31
+
+### Added
+
+- Branches on the project page are cards. The branch this computer is on is highlighted
+- When Git has newer changes on the branch you are testing, that card says so and offers **Get update**
+- Commit can put the change on a new branch and send it to Git, for when you are not sure it should land on the current branch yet
+
+## [1.21.0] - 2026-10-31
+
+### Added
+
+- The project page lists that repo's branches. **Test on this computer** makes this folder match a branch. **Make winner** merges that branch into Git's default branch — where both changed the same lines, the winner's version is used — then updates Git. You can delete the branch after it wins
+
 ## [1.20.0] - 2026-10-20
 
 ### Changed
