@@ -53,6 +53,8 @@ If `.venv` is missing or was created with Python 3.9 / old Flet, `run` will call
 
 On Windows and Linux you can also start it from the **Git Syncher** icon in the Start Menu or application menu after installing.
 
+On Windows, right-click **Git Syncher** in Start or right-click its running taskbar icon and choose **Pin to taskbar**. If you pinned an older version, unpin the old **Git Syncher** and **Flet description** buttons once. Open **Git Syncher** from Start so it can refresh the shortcut, then pin it again.
+
 ## Update
 
 The restart icon on the dashboard (**Update from Git and restart**) downloads the latest Git Syncher, reinstalls Python packages when `requirements.txt` changed, refreshes the menu icon, and starts the app again. If the download fails (no network, or you have local edits in this folder), you can restart the current version anyway.

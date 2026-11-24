@@ -22,4 +22,4 @@ if exist ".venv\Scripts\pythonw.exe" (
 ) else (
   start "" "%~dp0.venv\Scripts\python.exe" -m app.main
 )
-exit /b 0
+exit /b %errorlevel%

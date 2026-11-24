@@ -5,6 +5,12 @@ All notable changes to Git Syncher will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.2] - 2026-11-24
+
+### Fixed
+
+- On Windows, Git Syncher uses the same icon in Start, on the window, and on the taskbar. Pinning it opens Git Syncher again, and launching a second time restores the existing window.
+
 ## [1.23.1] - 2026-11-24
 
 ### Fixed

@@ -63,7 +63,7 @@ if "%NEED_GIT%"=="1" (
 if "%INSTALLED_SOMETHING%"=="1" (
   echo.
   echo Close this window and run scripts\install.bat again so PATH picks up the new programs.
-  exit /b 0
+  exit /b 2
 )
 
 python --version
@@ -115,8 +115,8 @@ if errorlevel 1 (
 echo Creating the Start Menu shortcut...
 ".venv\Scripts\python.exe" -m app.core.shortcuts
 if errorlevel 1 (
-  echo [WARN] The Start Menu shortcut was not created.
-  echo.
+  echo [ERROR] The Start Menu shortcut was not created.
+  exit /b 1
 )
 
 echo.

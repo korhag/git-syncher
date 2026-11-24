@@ -50,7 +50,6 @@ class TestRestartApp:
         ):
             assert restart_mod.restartApp(page) is True
 
-            release_mock.assert_called_once()
             popen_mock.assert_called_once()
             args, kwargs = popen_mock.call_args
             cmd = args[0]
@@ -60,6 +59,12 @@ class TestRestartApp:
                 flags = kwargs.get("creationflags", 0)
                 assert flags & 0x08000000 == 0  # CREATE_NO_WINDOW
                 assert flags & restart_mod._CREATE_NEW_PROCESS_GROUP
+                assert cmd[-1] == "--restart"
+                release_mock.assert_not_called()
+                page.run_task.assert_called_once_with(page.window.destroy)
+            else:
+                release_mock.assert_called_once()
+                page.run_task.assert_not_called()
             schedule_mock.assert_called_once()
             assert page.window.visible is False
             page.update.assert_called_once()
@@ -93,6 +98,20 @@ class TestRestartApp:
             if restart_mod.os.name == "nt":
                 flags = popen_mock.call_args[1].get("creationflags", 0)
                 assert flags & 0x08000000 == 0  # CREATE_NO_WINDOW
+
+    def testWindowsSpawnFailureKeepsExistingWindow(self, tmp_path: Path) -> None:
+        page = MagicMock()
+        with (
+            patch.object(restart_mod, "launcherPython", return_value=tmp_path / "pythonw.exe"),
+            patch.object(restart_mod.subprocess, "Popen", side_effect=OSError("launch failed")),
+            patch.object(restart_mod, "releaseAppLock") as release_mock,
+            patch.object(restart_mod, "_scheduleHardExit") as schedule_mock,
+        ):
+            assert restart_mod._spawnWindows(tmp_path, page) is False
+        release_mock.assert_not_called()
+        schedule_mock.assert_not_called()
+        page.update.assert_not_called()
+        page.run_task.assert_not_called()
 
     # --------------------------------------------------------
     # Method: testScheduleHardExitCallsOsExit

@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Hide the PowerShell window that writes the Start Menu shortcut.
-_CREATE_NO_WINDOW = 0x08000000
+from app.core import windows_shortcut
 
 APP_NAME = "Git Syncher"
+APP_USER_MODEL_ID = "GitSyncher.Desktop"
 LINUX_DESKTOP_NAME = "git-syncher.desktop"
 
 
@@ -55,10 +55,7 @@ def consolePython(root: Path) -> Optional[Path]:
 # ------------------------------------------------------------
 def launcherPython(root: Path) -> Optional[Path]:
     if os.name == "nt":
-        pythonw = root / ".venv" / "Scripts" / "pythonw.exe"
-        if pythonw.is_file():
-            return pythonw
-        return consolePython(root)
+        return _windowsLauncher(root)
     return consolePython(root)
 
 
@@ -89,14 +86,6 @@ def _unixLauncher(root: Path) -> Optional[Path]:
 
 
 # ------------------------------------------------------------
-# Function: _psQuote
-# Purpose: Single-quote a string for a PowerShell command.
-# ------------------------------------------------------------
-def _psQuote(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-# ------------------------------------------------------------
 # Function: _desktopQuote
 # Purpose: Quote one Exec argument for a .desktop file.
 # ------------------------------------------------------------
@@ -105,96 +94,32 @@ def _desktopQuote(value: str) -> str:
     return f'"{escaped}"'
 
 
-# ------------------------------------------------------------
-# Function: _hiddenProcessKwargs
-# Purpose: Windows flags so a helper process does not flash a console.
-# ------------------------------------------------------------
-def _hiddenProcessKwargs() -> dict:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    return {
-        "creationflags": _CREATE_NO_WINDOW,
-        "startupinfo": startupinfo,
-    }
-
-
-# ------------------------------------------------------------
-# Function: _installWindows
-# Purpose: Write Git Syncher.lnk into the current user's Start Menu.
-# ------------------------------------------------------------
-def _installWindows(root: Path) -> ShortcutResult:
+def ensureWindowsShortcut(root: Path) -> ShortcutResult:
+    """Register this checkout and repair shortcuts created by earlier versions."""
+    root = root.resolve()
     python = _windowsLauncher(root)
     if python is None:
-        return ShortcutResult(
-            ok=False,
-            message="Virtual environment was not found, so the Start Menu shortcut was not created.",
-        )
+        return ShortcutResult(ok=False, message="Virtual environment was not found.")
+    icon = root / "assets" / "icon.ico"
+    if not icon.is_file():
+        return ShortcutResult(ok=False, message=f"The Git Syncher icon is missing: {icon}")
 
-    appdata = os.environ.get("APPDATA", "").strip()
-    if not appdata:
-        return ShortcutResult(
-            ok=False,
-            message="APPDATA is not set, so the Start Menu shortcut was not created.",
-        )
-
-    programs = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     try:
-        programs.mkdir(parents=True, exist_ok=True)
+        link_path = windows_shortcut.programsFolder() / f"{APP_NAME}.lnk"
+        windows_shortcut.ensureLink(
+            link_path,
+            windows_shortcut.Link(
+                target=python,
+                working_directory=root,
+                arguments="-m app.main",
+                icon=icon,
+                description=APP_NAME,
+                app_id=APP_USER_MODEL_ID,
+            ),
+        )
     except OSError as exc:
-        return ShortcutResult(ok=False, message=f"Could not open the Start Menu folder: {exc}")
-
-    link_path = programs / f"{APP_NAME}.lnk"
-    icon_path = root / "assets" / "icon.ico"
-    lines = [
-        "$shell = New-Object -ComObject WScript.Shell",
-        f"$shortcut = $shell.CreateShortcut({_psQuote(str(link_path))})",
-        f"$shortcut.TargetPath = {_psQuote(str(python))}",
-        "$shortcut.Arguments = '-m app.main'",
-        f"$shortcut.WorkingDirectory = {_psQuote(str(root))}",
-        "$shortcut.WindowStyle = 1",
-        f"$shortcut.Description = {_psQuote(APP_NAME)}",
-    ]
-    if icon_path.is_file():
-        lines.append(f"$shortcut.IconLocation = {_psQuote(str(icon_path))}")
-    lines.append("$shortcut.Save()")
-
-    try:
-        completed = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "; ".join(lines),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-            **_hiddenProcessKwargs(),
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return ShortcutResult(ok=False, message=f"Could not create the Start Menu shortcut: {exc}")
-
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        if detail:
-            return ShortcutResult(
-                ok=False,
-                message=f"Could not create the Start Menu shortcut: {detail}",
-            )
-        return ShortcutResult(ok=False, message="Could not create the Start Menu shortcut.")
-
-    return ShortcutResult(
-        ok=True,
-        message=f"Start Menu shortcut: {link_path}",
-        path=link_path,
-    )
+        return ShortcutResult(ok=False, message=f"Could not register the Start Menu shortcut: {exc}")
+    return ShortcutResult(ok=True, message=f"Start Menu shortcut: {link_path}", path=link_path)
 
 
 # ------------------------------------------------------------
@@ -273,7 +198,7 @@ def _installLinux(root: Path) -> ShortcutResult:
 def installShortcuts(root: Optional[Path] = None) -> ShortcutResult:
     folder = (root or projectRoot()).resolve()
     if os.name == "nt":
-        return _installWindows(folder)
+        return ensureWindowsShortcut(folder)
     if sys.platform == "darwin":
         return ShortcutResult(
             ok=False,

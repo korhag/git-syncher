@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from app.core import shortcuts
+import pytest
+
+from app.core import shortcuts, windows_shortcut
 
 
 # ------------------------------------------------------------
@@ -21,68 +24,81 @@ def _touch(path: Path) -> Path:
 # Tests: installShortcuts
 # ------------------------------------------------------------
 class TestInstallShortcuts:
-    # --------------------------------------------------------
-    # Method: testWindowsStartMenuShortcut
-    # Purpose: PowerShell receives the venv python, repo, and icon.
-    # --------------------------------------------------------
     def testWindowsStartMenuShortcut(self, tmp_path: Path, monkeypatch) -> None:
         root = tmp_path / "my app"
         pythonw = _touch(root / ".venv" / "Scripts" / "pythonw.exe")
-        icon = root / "assets" / "icon.ico"
-        icon.parent.mkdir(parents=True)
-        icon.write_bytes(b"ico")
-        appdata = tmp_path / "Roaming"
-        monkeypatch.setenv("APPDATA", str(appdata))
-        calls: list[list[str]] = []
+        icon = _touch(root / "assets" / "icon.ico")
+        programs = tmp_path / "Redirected Programs"
+        monkeypatch.setattr(windows_shortcut, "programsFolder", lambda: programs)
+        with patch.object(windows_shortcut, "ensureLink") as ensure:
+            result = shortcuts.ensureWindowsShortcut(root)
+        assert result.ok
+        assert result.path == programs / "Git Syncher.lnk"
+        ensure.assert_called_once_with(result.path, windows_shortcut.Link(
+            target=pythonw, working_directory=root, arguments="-m app.main", icon=icon,
+            description="Git Syncher", app_id="GitSyncher.Desktop",
+        ))
 
-        def fake_run(args, **_kwargs):
-            calls.append(list(args))
-            return subprocess.CompletedProcess(args, 0, "", "")
-
-        with patch.object(shortcuts.subprocess, "run", side_effect=fake_run):
-            result = shortcuts._installWindows(root)
-
-        link = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Git Syncher.lnk"
-        assert result.ok is True
-        assert result.path == link
-        assert len(calls) == 1
-        script = calls[0][-1]
-        assert "WScript.Shell" in script
-        assert "CreateShortcut" in script
-        assert str(link) in script
-        assert str(pythonw) in script
-        assert str(root) in script
-        assert str(icon) in script
-        assert "-m app.main" in script
-
-    # --------------------------------------------------------
-    # Method: testWindowsPowerShellFailure
-    # Purpose: A failing shortcut command is reported, not raised.
-    # --------------------------------------------------------
-    def testWindowsPowerShellFailure(self, tmp_path: Path, monkeypatch) -> None:
-        root = tmp_path / "repo"
-        _touch(root / ".venv" / "Scripts" / "python.exe")
-        monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
-
-        def fake_run(args, **_kwargs):
-            return subprocess.CompletedProcess(args, 1, "", "access denied")
-
-        with patch.object(shortcuts.subprocess, "run", side_effect=fake_run):
-            result = shortcuts._installWindows(root)
-
-        assert result.ok is False
+    def testWindowsRegistrationFailure(self, tmp_path: Path, monkeypatch) -> None:
+        _touch(tmp_path / ".venv" / "Scripts" / "python.exe")
+        _touch(tmp_path / "assets" / "icon.ico")
+        monkeypatch.setattr(windows_shortcut, "programsFolder", lambda: tmp_path)
+        with patch.object(windows_shortcut, "ensureLink", side_effect=OSError("access denied")):
+            result = shortcuts.ensureWindowsShortcut(tmp_path)
+        assert not result.ok
         assert "access denied" in result.message
 
-    # --------------------------------------------------------
-    # Method: testWindowsMissingVenv
-    # Purpose: No interpreter means no shortcut and no PowerShell call.
-    # --------------------------------------------------------
-    def testWindowsMissingVenv(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
-        with patch.object(shortcuts.subprocess, "run") as run_mock:
-            result = shortcuts._installWindows(tmp_path)
-        assert result.ok is False
-        run_mock.assert_not_called()
+    def testWindowsMissingVenv(self, tmp_path: Path) -> None:
+        with patch.object(windows_shortcut, "ensureLink") as ensure:
+            result = shortcuts.ensureWindowsShortcut(tmp_path)
+        assert not result.ok
+        ensure.assert_not_called()
+
+    @pytest.mark.skipif(os.name != "nt", reason="exercises Windows shell links")
+    def testRepairLegacyLinkAndKeepWorkingRegistration(self, tmp_path: Path, monkeypatch) -> None:
+        root = tmp_path / "Derya'nın çalışma alanı"
+        pythonw = _touch(root / ".venv" / "Scripts" / "pythonw.exe")
+        icon = _touch(root / "assets" / "icon.ico")
+        programs = tmp_path / "Programs"
+        programs.mkdir()
+        link = programs / "Git Syncher.lnk"
+        monkeypatch.setattr(windows_shortcut, "programsFolder", lambda: programs)
+        # Reproduce the installed WScript link from v1.23.1 (no explicit AppUserModelID).
+        subprocess.run([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:TEST_LINK); "
+            "$s.TargetPath = $env:TEST_TARGET; $s.Save()",
+        ], check=True, env={**os.environ, "TEST_LINK": str(link), "TEST_TARGET": str(pythonw)})
+        assert windows_shortcut.readLink(link).app_id == ""
+
+        assert shortcuts.ensureWindowsShortcut(root).ok
+        assert windows_shortcut.readLink(link) == windows_shortcut.Link(
+            target=pythonw, working_directory=root, arguments="-m app.main", icon=icon,
+            description="Git Syncher", app_id="GitSyncher.Desktop",
+        )
+        # Verify Explorer sees the same ID through its independent automation API.
+        explorer = subprocess.run([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "$folder = (New-Object -ComObject Shell.Application).NameSpace($env:TEST_PROGRAMS); "
+            "$folder.ParseName('Git Syncher.lnk').ExtendedProperty('System.AppUserModel.ID')",
+        ], check=True, capture_output=True, text=True,
+            env={**os.environ, "TEST_PROGRAMS": str(programs)})
+        assert explorer.stdout.strip() == "GitSyncher.Desktop"
+        # A normal launch must not rewrite a valid link.
+        with patch.object(windows_shortcut, "_save_link", side_effect=AssertionError):
+            assert shortcuts.ensureWindowsShortcut(root).ok
+
+        # A failed refresh must leave the previous working shortcut intact.
+        old_bytes = link.read_bytes()
+        new_root = tmp_path / "new folder"
+        _touch(new_root / ".venv" / "Scripts" / "pythonw.exe")
+        _touch(new_root / "assets" / "icon.ico")
+        with patch.object(windows_shortcut, "_save_link", side_effect=OSError("disk full")):
+            assert not shortcuts.ensureWindowsShortcut(new_root).ok
+        assert link.read_bytes() == old_bytes
+        assert list(programs.iterdir()) == [link]
+        assert shortcuts.ensureWindowsShortcut(new_root).ok
+        assert windows_shortcut.readLink(link).working_directory == new_root
 
     # --------------------------------------------------------
     # Method: testLinuxDesktopFile

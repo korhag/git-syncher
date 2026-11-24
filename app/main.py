@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import logging
+import os
+import sys
+import time
+
 import flet as ft
 
 from app.core.close_check import closeWarningMessage, unsyncedProjectNames
 from app.core.git_service import GitService
 from app.core.instance_lock import (
     acquireAppLock,
+    getAppLock,
     releaseAppLock,
     showAlreadyRunningAndExit,
 )
+from app.core.shortcuts import APP_NAME, APP_USER_MODEL_ID, ensureWindowsShortcut, projectRoot
 from app.core.store import VaultStore
 from app.core.vault_registry import VaultRegistry
+from app.core.windows_activation import WindowsActivation, requestActivation
 from app.models.project import ProjectStatus
 from app.ui.busy import BusyOverlay
 from app.ui.dashboard import DashboardView
@@ -18,6 +26,8 @@ from app.ui.dialogs import Dialogs
 from app.ui.layout import fitWindowToScreen
 from app.ui.project_detail import ProjectDetailView
 from app.ui.unlock import UnlockView
+
+_logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------
@@ -44,7 +54,8 @@ class GitSyncherApp:
         self._close_check_in_progress = False
         self._close_prompt_open = False
         self._configurePage()
-        page.on_close = self._onWindowClose
+        if sys.platform != "win32":
+            page.on_close = self._onWindowClose
         page.window.on_event = self._onWindowEvent
         page.add(
             ft.Stack(
@@ -62,7 +73,7 @@ class GitSyncherApp:
     # Purpose: Window chrome and theme defaults.
     # --------------------------------------------------------
     def _configurePage(self) -> None:
-        self.page.title = "Git Syncher"
+        self.page.title = APP_NAME
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 0
         self.page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL)
@@ -170,7 +181,10 @@ class GitSyncherApp:
             self.page.update()
         except Exception:
             pass
-        releaseAppLock()
+        # On Windows, keep the lock until Flet and the activation listener
+        # have stopped so a new launch cannot race the closing window.
+        if sys.platform != "win32":
+            releaseAppLock()
 
         async def destroy() -> None:
             await self.page.window.destroy()
@@ -273,7 +287,7 @@ def main(page: ft.Page) -> None:
 # Purpose: Start Flet with ft.run (0.80+). Fail clearly if the
 #          venv still has Flet 0.28 from Python 3.9.
 # ------------------------------------------------------------
-def runApp(target) -> None:
+def runApp(target, activation: WindowsActivation | None = None) -> None:
     if not callable(getattr(ft, "run", None)):
         flet_ver = getattr(getattr(ft, "version", None), "version", None) or "unknown"
         raise SystemExit(
@@ -282,16 +296,62 @@ def runApp(target) -> None:
             "Python 3.11+ is required. Recreate the virtual environment:\n"
             "  rm -rf .venv && ./install.sh"
         )
-    ft.run(target)
+    if sys.platform != "win32":
+        ft.run(target)
+        return
+
+    root = projectRoot()
+    os.environ["FLET_APP_USER_MODEL_ID"] = APP_USER_MODEL_ID
+    shortcut = ensureWindowsShortcut(root)
+    if not shortcut.ok:
+        _logger.warning("%s", shortcut.message)
+
+    def showApp(page: ft.Page) -> None:
+        # Flet processes the title, content, and ICO before showing the
+        # native window. The application ID is already set by its runner.
+        page.window.icon = str(root / "assets" / "icon.ico")
+        try:
+            target(page)
+        finally:
+            # Let Flet display its startup error if initialization failed.
+            page.window.visible = True
+            page.update()
+        if activation is not None:
+            activation.attach(page)
+
+    ft.run(showApp, view=ft.AppView.FLET_APP_HIDDEN, assets_dir=str(root / "assets"))
 
 
 # ------------------------------------------------------------
-# Script entry: python -m app.main
+# Function: launchApp
+# Purpose: Shared entry point for the shortcut, scripts, and restarts.
 # ------------------------------------------------------------
-if __name__ == "__main__":
+def launchApp() -> None:
+    if sys.platform == "win32":
+        lock_path = getAppLock().lock_path
+        # The new process can start before the previous viewer exits.
+        deadline = time.monotonic() + (10 if sys.argv[1:] == ["--restart"] else 0)
+        while not acquireAppLock():
+            if time.monotonic() >= deadline:
+                requestActivation(lock_path)
+                return
+            time.sleep(0.1)
+        activation = WindowsActivation(lock_path)
+        try:
+            activation.start()
+            runApp(main, activation)
+        finally:
+            activation.close()
+            releaseAppLock()
+        return
+
     if not acquireAppLock():
         showAlreadyRunningAndExit()
     try:
         runApp(main)
     finally:
         releaseAppLock()
+
+
+if __name__ == "__main__":
+    launchApp()
