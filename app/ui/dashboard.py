@@ -1141,43 +1141,41 @@ class DashboardView:
             dense=True,
         )
         init_checkbox = ft.Checkbox(
-            label="Initialize Git if folder is not a repository",
+            label="Initialize Git in this folder",
             value=False,
             visible=not editing,
         )
-        error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+        note_text = ft.Text(size=12)
+        note_area = ft.Column(
+            [ft.Semantics(content=note_text, live_region=True)],
+            visible=False,
+            height=60,
+            scroll=ft.ScrollMode.ADAPTIVE,
+        )
         applying_account = {"active": False}
         from_git = {"value": False}
 
-        this_computer_hint = (
-            "Publish this folder to Git. Initialize if it is not a repo yet."
-        )
+        this_computer_hint = "Publish a folder on this computer to Git."
         from_git_hint = (
             "Clone a Git repo into an empty folder on this computer."
         )
-        mode_hint = ft.Text(
-            this_computer_hint,
-            size=12,
-            color=ft.Colors.ON_SURFACE_VARIANT,
-        )
-
         def apply_from_git_mode(enabled: bool) -> None:
             from_git["value"] = enabled
-            init_checkbox.visible = (not enabled) and (not editing)
             if enabled:
+                init_checkbox.visible = False
                 path_field.label = "Empty folder to clone into"
                 path_field.hint_text = "Must be empty — type a path or Browse"
                 branch_field.hint_text = (
                     "Refresh loads remote branches, then clone that branch"
                 )
-                mode_hint.value = from_git_hint
             else:
+                path = expandFolderPath(path_field.value or "")
+                init_checkbox.visible = not path or not self.git.isRepo(path)
                 path_field.label = "Folder path"
                 path_field.hint_text = "Type a path (e.g. ~/Projects/my-app) or Browse"
                 branch_field.hint_text = (
                     "Pick a folder or Refresh — new / empty remotes use main"
                 )
-                mode_hint.value = this_computer_hint
 
         def on_mode_change(e: ft.ControlEvent) -> None:
             idx = 0
@@ -1185,6 +1183,7 @@ class DashboardView:
             if control is not None:
                 idx = int(getattr(control, "selected_index", 0) or 0)
             apply_from_git_mode(idx == 1)
+            clear_note()
             self.page.update()
 
         def maybe_fill_name_from_url() -> None:
@@ -1258,16 +1257,18 @@ class DashboardView:
         email_field.on_change = on_identity_edit
 
         def set_error(message: str) -> None:
-            error_text.color = ft.Colors.RED_400
-            error_text.value = message
+            note_text.color = ft.Colors.RED_400
+            note_text.value = message
+            note_area.visible = True
 
         def set_info(message: str) -> None:
-            error_text.color = ft.Colors.ON_SURFACE_VARIANT
-            error_text.value = message
+            note_text.color = ft.Colors.ON_SURFACE_VARIANT
+            note_text.value = message
+            note_area.visible = True
 
         def clear_note() -> None:
-            error_text.color = ft.Colors.RED_400
-            error_text.value = ""
+            note_text.value = ""
+            note_area.visible = False
 
         def note_existing_if_any() -> None:
             if editing:
@@ -1317,7 +1318,7 @@ class DashboardView:
                     set_error("Choose an empty folder to clone into.")
                 else:
                     clear_note()
-                note_existing_if_any()
+                    note_existing_if_any()
                 self.page.update()
                 return
             if self.git.isRepo(selected):
@@ -1335,12 +1336,13 @@ class DashboardView:
                     email_field.value = uemail
                 init_checkbox.value = False
                 init_checkbox.visible = False
-            elif Path(selected).is_dir():
+            else:
                 init_checkbox.visible = True
-                branch_field.options = [
-                    ft.DropdownOption(key="main", text="main")
-                ]
-                branch_field.value = "main"
+                if Path(selected).is_dir():
+                    branch_field.options = [
+                        ft.DropdownOption(key="main", text="main")
+                    ]
+                    branch_field.value = "main"
             clear_note()
             note_existing_if_any()
             self.page.update()
@@ -1448,10 +1450,12 @@ class DashboardView:
             self.page.pop_dialog()
 
         save_button = ft.FilledButton("Save")
+        save_busy_note = "Another operation was running. Try Save again."
 
         def save(_e: ft.ControlEvent) -> None:
             if self.busy.busy:
-                Dialogs.showSnack(self.page, "Please wait…")
+                set_info(save_busy_note)
+                self.page.update()
                 return
             path = expandFolderPath(path_field.value or "")
             if path:
@@ -1468,7 +1472,8 @@ class DashboardView:
                 set_error("Enter a display name.")
                 self.page.update()
                 return
-            if from_git["value"] and not editing:
+            clone_from_git = from_git["value"] and not editing
+            if clone_from_git:
                 remote_url = (remote_field.value or "").strip()
                 if not remote_url:
                     set_error("Enter a remote URL.")
@@ -1525,11 +1530,11 @@ class DashboardView:
             project.email = (email_field.value or "").strip()
             project.pat = (pat_field.value or "").strip()
             project.default_branch = branch_value
-            should_init = bool(init_checkbox.value)
+            should_init = init_checkbox.visible and bool(init_checkbox.value)
 
             def work() -> tuple[Optional[ActionOutcome], Optional[str]]:
-                """Return (switch_outcome_or_None, error_message_or_None)."""
-                if from_git["value"] and not editing:
+                """Return the outcome or an error, or (None, None) to request initialization."""
+                if clone_from_git:
                     clone_out = self.git.cloneRepo(project, path, branch_value)
                     if not clone_out.success:
                         return None, clone_out.message or clone_out.title
@@ -1548,10 +1553,7 @@ class DashboardView:
                         if not outcome.success:
                             return None, outcome.message or outcome.title
                     else:
-                        return None, (
-                            "Folder is not a Git repo. Check 'Initialize Git' "
-                            "or pick another folder."
-                        )
+                        return None, None
 
                 if project.remote_url:
                     remote_outcome = self.git.setRemote(path, project.remote_url)
@@ -1581,7 +1583,15 @@ class DashboardView:
                     set_error(err_msg)
                     self.page.update()
                     return
-                assert switch is not None
+                if switch is None:
+                    if not from_git["value"]:
+                        init_checkbox.visible = True
+                        set_error(
+                            "This folder is not a Git repository. "
+                            "Check Initialize Git or choose another folder."
+                        )
+                    self.page.update()
+                    return
                 if not switch.success:
                     # Still saved the picked branch; tell the user why checkout failed.
                     set_error(switch.message or switch.title)
@@ -1610,10 +1620,11 @@ class DashboardView:
                 self.refreshAll()
 
             save_button.disabled = True
-            clear_note()
+            set_info("Saving project…")
             self.page.update()
             if not self.busy.runOrSnack("Saving project…", work, on_done=done):
                 save_button.disabled = False
+                set_info(save_busy_note)
                 self.page.update()
 
         save_button.on_click = save
@@ -1630,8 +1641,6 @@ class DashboardView:
             on_click=refresh_branches,
             width=trailing_slot_width,
         )
-        win_h = int(getattr(self.page.window, "height", None) or 860)
-        content_h = dialogHeight(self.page, preferred=min(520, max(240, int(win_h * 0.68))))
         form_controls: list[ft.Control] = [
             field_row(account_field),
             field_row(name_field),
@@ -1641,8 +1650,6 @@ class DashboardView:
             field_row(email_field),
             field_row(pat_field),
             field_row(branch_field, refresh_button),
-            init_checkbox,
-            error_text,
         ]
         if not editing:
             form_controls.insert(
@@ -1679,18 +1686,23 @@ class DashboardView:
                     ),
                 ),
             )
+        fields = ft.Column(
+            form_controls,
+            scroll=ft.ScrollMode.ADAPTIVE,
+            expand=True,
+        )
         dialog = ft.AlertDialog(
             modal=True,
-            scrollable=True,
             title=ft.Text("Edit project" if editing else "Add project"),
+            inset_padding=ft.Padding.symmetric(horizontal=16, vertical=16),
+            content_padding=ft.Padding(left=24, top=12, right=24, bottom=0),
             content=ft.Container(
-                width=dialogWidth(self.page, preferred=560),
-                height=content_h,
+                width=560,
+                height=580,
                 content=ft.Column(
-                    form_controls,
-                    tight=True,
-                    scroll=ft.ScrollMode.AUTO,
-                    expand=True,
+                    [fields, init_checkbox, note_area],
+                    spacing=8,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 ),
             ),
             actions=[
